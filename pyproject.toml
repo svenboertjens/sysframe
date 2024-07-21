@@ -1,0 +1,6 @@
+[build-system]
+requires = ["setuptools", "wheel", "cibuildwheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.cibuildwheel]
+manylinux-x86_64-image = "manylinux2014"

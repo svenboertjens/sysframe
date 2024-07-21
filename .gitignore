@@ -1,0 +1,10 @@
+old
+.vscode
+__pycache__
+*.so
+README_setup.md
+.venv
+build
+dist
+*.egg-info
+wheelhouse
