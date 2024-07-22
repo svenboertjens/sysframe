@@ -12,7 +12,6 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <pthread.h>
-#include "pybytes.h"
 
 typedef struct
 {
@@ -22,13 +21,13 @@ typedef struct
 
 #define SHM_SIZE sizeof(SharedMemoryStruct)
 
-void create_shared_memory(const char *name)
+PyObject *create_shared_memory(const char *name)
 {
     int fd = shm_open(name, O_CREAT | O_RDWR, 0666);
     if (fd == -1)
     {
         perror("shm_open");
-        return;
+        return Py_False;
     }
 
     if (ftruncate(fd, SHM_SIZE) == -1)
@@ -36,7 +35,7 @@ void create_shared_memory(const char *name)
         perror("ftruncate");
         close(fd);
         shm_unlink(name);
-        return;
+        return Py_False;
     }
 
     SharedMemoryStruct *shm_ptr = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -45,7 +44,7 @@ void create_shared_memory(const char *name)
         perror("mmap");
         close(fd);
         shm_unlink(name);
-        return;
+        return Py_False;
     }
 
     pthread_mutexattr_t attr;
@@ -56,14 +55,49 @@ void create_shared_memory(const char *name)
 
     munmap(shm_ptr, SHM_SIZE);
     close(fd);
+
+    return Py_True;
 }
 
-void remove_shared_memory(const char *name)
+PyObject *create_memory(PyObject *self, PyObject *args)
 {
-    shm_unlink(name);
+    PyObject *name;
+
+    if (!PyArg_ParseTuple(args, "O!", &PyUnicode_Type, &name))
+    {
+        PyErr_SetString(PyExc_ValueError, "Expected 1 'str' type.");
+        return NULL;
+    }
+
+    // Create the shared memory and return the result
+    return create_shared_memory(PyUnicode_AsUTF8(name));
 }
 
-void *read_shared_memory(const char *name)
+PyObject *remove_memory(PyObject *self, PyObject *args)
+{
+    PyObject *py_name;
+
+    if (!PyArg_ParseTuple(args, "O!", &PyUnicode_Type, &py_name))
+    {
+        PyErr_SetString(PyExc_ValueError, "Expected 1 'str' type.");
+        return NULL;
+    }
+
+    // Convert the name to a C char
+    char *name = PyUnicode_AsUTF8(py_name);
+
+    // Unlink the memory
+    if (!shm_unlink(name))
+    {
+        // Failed to unlink, return False to indicate failure
+        return Py_False;
+    }
+
+    // Return True to indicate success
+    return Py_True;
+}
+
+char *read_shared_memory(const char *name)
 {
     int fd = shm_open(name, O_RDWR, 0666);
     if (fd == -1)
@@ -81,7 +115,7 @@ void *read_shared_memory(const char *name)
     }
 
     pthread_mutex_lock(&shm_ptr->mutex);
-    void *value = shm_ptr->value;
+    char *value = shm_ptr->value;
     pthread_mutex_unlock(&shm_ptr->mutex);
 
     munmap(shm_ptr, SHM_SIZE);
@@ -90,21 +124,37 @@ void *read_shared_memory(const char *name)
     return value;
 }
 
-void write_shared_memory(const char *name, void *value)
+PyObject *read_memory(PyObject *self, PyObject *args)
+{
+    PyObject *name;
+
+    if (!PyArg_ParseTuple(args, "O!", &PyUnicode_Type, &name))
+    {
+        PyErr_SetString(PyExc_ValueError, "Expected 1 'str' type.");
+        return NULL;
+    }
+
+    // Fetch the value stored in the shared memory
+    char *value = read_shared_memory(PyUnicode_AsUTF8(name));
+
+    // Return the value as a Python bytes object
+    return PyBytes_FromString(value);
+}
+
+void write_shared_memory(const char *name, char *value)
 {
     int fd = shm_open(name, O_RDWR, 0666);
     if (fd == -1)
     {
-        perror("shm_open");
-        return;
+        PyErr_SetString(PyExc_MemoryError, "Failed to open the shared memory address.");
+        return NULL;
     }
 
     SharedMemoryStruct *shm_ptr = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (shm_ptr == MAP_FAILED)
     {
-        perror("mmap");
-        close(fd);
-        return;
+        PyErr_SetString(PyExc_MemoryError, "Failed to map the shared memory address.");
+        return NULL;
     }
 
     pthread_mutex_lock(&shm_ptr->mutex);
@@ -115,26 +165,52 @@ void write_shared_memory(const char *name, void *value)
     close(fd);
 }
 
+PyObject *write_memory(PyObject *self, PyObject *args)
+{
+    PyObject *name;
+    PyObject *value;
+
+    if (!PyArg_ParseTuple(args, "O!O!", &PyUnicode_Type, &name, &PyBytes_Type, &value))
+    {
+        PyErr_SetString(PyExc_ValueError, "Expected a 'str' and 'bytes' type.");
+        return NULL;
+    }
+
+    // Write it to the shared memory address
+    write_shared_memory(PyUnicode_AsUTF8(name), PyBytes_AsString(value));
+
+    // Return True to indicate success
+    return Py_True;
+}
+
 typedef struct {
     pthread_mutex_t mutex;
-    pthread_cond_t cond;
-    size_t size;
+    pthread_cond_t func_cond;
+    pthread_cond_t call_cond;
+    char activity;
+    void *args;
 } shared_function;
 
 // Initiate a shared memory for a shared function
-PyObject *create_shared_function(const char *name, size_t size)
+PyObject *create_shared_function(const char *name, PyObject *func)
 {
     int fd = shm_open(name, O_CREAT | O_RDWR, 0666);
     if (fd == -1)
     {
-        PyErr_SetString(PyExc_MemoryError, "Failed to create the shared memory.");
-        return NULL;
+        // Check whether it already exists or if it's a different error
+        if (errno == ENOENT)
+        {
+            PyErr_SetString(PyExc_MemoryError, "The shared memory address already exists.");
+            return NULL;
+        }
+        else
+        {
+            PyErr_SetString(PyExc_MemoryError, "Failed to create the shared memory.");
+            return NULL;
+        }
     }
 
-    // Calculate the total size, which is the metadata plus the arg size
-    size_t total_size = sizeof(shared_function) + size;
-
-    if (ftruncate(fd, total_size) == -1)
+    if (ftruncate(fd, sizeof(shared_function)) == -1)
     {
         close(fd);
         shm_unlink(name);
@@ -142,7 +218,7 @@ PyObject *create_shared_function(const char *name, size_t size)
         return NULL;
     }
 
-    void *shm_ptr = mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    void *shm_ptr = mmap(NULL, sizeof(shared_function), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (shm_ptr == MAP_FAILED)
     {
         close(fd);
@@ -152,154 +228,83 @@ PyObject *create_shared_function(const char *name, size_t size)
     }
 
     // Create the shared function struct
-    shared_function *metadata = shm_ptr;
+    shared_function *data = shm_ptr;
 
-    // Write the size of the args to the size attribute
-    metadata->size = size;
-
-    // Initialize mutex and condition variable
-    pthread_mutex_t *mutex = &(metadata->mutex);
+    // Initialize mutex and cond variables
+    pthread_mutex_t *mutex = &(data->mutex);
     pthread_mutexattr_t mutex_attr;
 
     pthread_mutexattr_init(&mutex_attr);
     pthread_mutexattr_setpshared(&mutex_attr, PTHREAD_PROCESS_SHARED);
     pthread_mutex_init(mutex, &mutex_attr);
 
-    pthread_cond_t *cond = &(metadata->cond);
+    pthread_cond_t *func_cond = &(data->func_cond);
     pthread_condattr_t cond_attr;
 
     pthread_condattr_init(&cond_attr);
     pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
-    pthread_cond_init(cond, &cond_attr);
+    pthread_cond_init(func_cond, &cond_attr);
 
-    munmap(shm_ptr, total_size);
+    pthread_cond_t *call_cond = &(data->call_cond);
+    pthread_condattr_t cond_attr;
+
+    pthread_condattr_init(&cond_attr);
+    pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
+    pthread_cond_init(call_cond, &cond_attr);
+
+    // Set the activity byte to \x00 to indicate it's active
+    data->activity = '\x00';
+
+    // Set a while loop to repeatedly catch all signals
+    while (1)
+    {
+        // Begin waiting on the cond to be signaled
+        pthread_mutex_lock(&mutex);
+        pthread_cond_wait(&func_cond, &mutex);
+
+        // Check if the activity byte is set to inactive
+        if (data->activity == '\x01')
+        {
+            // Break the loop to do cleanup
+            break;
+        }
+
+        // Call the function and parse the args to it
+        PyObject *return_args = PyObject_CallFunction(func, "O", (PyObject *)(data->args));
+
+        Py_INCREF(return_args);
+
+        // Set the args to the returned args so that the caller can fetch them
+        data->args = return_args;
+
+        // Signal the caller that the returned args are set
+        pthread_cond_signal(&call_cond);
+
+        // Unlock the mutex after performing the function call to prevent signals from missing this loop
+        pthread_mutex_unlock(&mutex);
+    }
+
+    // Cleanup for when the loop breaks
+    munmap(shm_ptr, sizeof(shared_function));
     close(fd);
 
-    // Return a True object to indicate success
+    // Return True to indicate we didn't exit due to a failure
     return Py_True;
 }
 
 PyObject *create_function(PyObject *self, PyObject *args)
 {
     PyObject *name;
-    PyObject *size;
-
-    if (!PyArg_ParseTuple(args, "O!O!", &PyUnicode_Type, &name, &PyLong_Type, &size))
-    {
-        PyErr_SetString(PyExc_ValueError, "Expected a 'str' and 'int' type.");
-        return NULL;
-    }
-
-    // Call the function to create the shared function
-    return create_shared_function(PyUnicode_AsUTF8(name), PyLong_AsSize_t(size));
-}
-
-typedef struct {
-    PyObject *func;
-    char *args;
-} call_py_func_args;
-
-void* call_python_function(void *args)
-{
-    // Convert it back to a struct
-    call_py_func_args *python_args = (call_py_func_args *)args;
-    // Call the function and parse the args converted from bytes to a tuple
-    PyObject_CallFunction(python_args->func, "O", to_value(NULL, PyBytes_FromString(python_args->args)));
-}
-
-// Link a function to a shared memory conditional
-PyObject *link_shared_function(const char *name, PyObject *func)
-{
-    // The size of the metadata info
-    size_t meta_size = sizeof(pthread_mutex_t) + sizeof(pthread_cond_t) + sizeof(size_t);
-
-    int fd_meta = shm_open(name, O_RDWR, 0666);
-    if (fd_meta == -1)
-    {
-        PyErr_SetString(PyExc_MemoryError, "Failed to open the shared memory.");
-        return NULL;
-    }
-
-    void *shm_meta = mmap(NULL, meta_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_meta, 0);
-    if (shm_meta == MAP_FAILED)
-    {
-        close(fd_meta);
-        PyErr_SetString(PyExc_MemoryError, "Failed to map the shared memory.");
-        return NULL;
-    }
-
-    // Get the metadata of the shared memory
-    shared_function *metadata = shm_meta;
-
-    // Calculate the total size
-    size_t total_size = sizeof(shared_function) + metadata->size;
-
-    // Close the memory opened with just the metadata
-    munmap(shm_meta, meta_size);
-    close(fd_meta);
-
-    // And open the full shared memory
-    int fd = shm_open(name, O_RDWR, 0666);
-    if (fd == -1)
-    {
-        PyErr_SetString(PyExc_MemoryError, "Failed to open the shared memory.");
-        return NULL;
-    }
-
-    void *shm_ptr = mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (shm_ptr == MAP_FAILED)
-    {
-        close(fd);
-        PyErr_SetString(PyExc_MemoryError, "Failed to map the shared memory.");
-        return NULL;
-    }
-
-    // Continue waiting for calls until the loop is stopped
-    while (1)
-    {
-        pthread_mutex_lock(&(metadata->mutex));
-        pthread_cond_wait(&(metadata->cond), &(metadata->mutex));
-
-        // Get the args in a string
-        char args[metadata->size];
-        // Copy the string from the offset after the metadata
-        strncpy(args, shm_ptr + sizeof(shared_function), metadata->size);
-
-        // Get a struct to store the function call arguments in
-        call_py_func_args *python_args;
-        // Assign values to it
-        python_args->func = func;
-        python_args->args = args;
-
-        // Thread the function call to prevent halting the mutex for too long
-        pthread_t thread;
-        pthread_create(&thread, NULL, call_python_function, (void *)&python_args);
-
-        // Unlock the mutex after threading the function call to prevent signals from missing this loop
-        pthread_mutex_unlock(&(metadata->mutex));
-    }
-
-    munmap(shm_ptr, total_size);
-    close(fd);
-
-    // Return a True object to indicate success
-    return Py_True;
-}
-
-PyObject *link_function(PyObject *self, PyObject *args)
-{
-    PyObject *name;
     PyObject *func;
 
-    // Get the shared memory name and the function to link, and whether to thread it
     if (!PyArg_ParseTuple(args, "O!O!", &PyUnicode_Type, &name, &PyFunction_Type, &func))
     {
         PyErr_SetString(PyExc_ValueError, "Expected a 'str' and 'function' type.");
         return NULL;
     }
 
-    // Call the function to link the parsed Python function to the shared memory signal
-    return link_shared_function(PyUnicode_AsUTF8(name), func);
+    // Call the function to create the shared function
+    return create_shared_function(PyUnicode_AsUTF8(name), func);
 }
 
 // Call a function linked to a shared memory conditional
@@ -312,90 +317,128 @@ PyObject *call_shared_function(const char *name, PyObject *args)
         return NULL;
     }
 
-    void *shm_meta = mmap(NULL, sizeof(shared_function), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (shm_meta == MAP_FAILED)
-    {
-        close(fd);
-        PyErr_SetString(PyExc_MemoryError, "Failed to map the shared memory.");
-        return NULL;
-    }
-
-    // Get the metadata itself from the shm of the metadata
-    shared_function *metadata = shm_meta;
-
-    pthread_mutex_lock(&(metadata->mutex));
-
-    // Calculate the total size of the shared memory block
-    size_t total_size = sizeof(shared_function) + metadata->size;
-
-    munmap(shm_meta, sizeof(shared_function));
-
     // Get the full shared memory now that we have the full size
-    void *shm_ptr = mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (shm_meta == MAP_FAILED)
+    void *shm_ptr = mmap(NULL, sizeof(shared_function), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (shm_ptr == MAP_FAILED)
     {
         close(fd);
         PyErr_SetString(PyExc_MemoryError, "Failed to map the shared memory.");
         return NULL;
     }
 
-    // Convert the args to a pybytes object
-    PyObject *py_result = from_value(NULL, args);
-    // And convert it to a C string
-    char *result = PyBytes_AsString(py_result);
+    // Get the data itself from the shm of the data
+    shared_function *data = shm_ptr;
 
-    Py_DECREF(py_result);
+    pthread_mutex_lock(&(data->mutex));
 
-    // Copy the concatenated string to the shared memory
-    char *pointer_args = (char *)((char *)shm_ptr + sizeof(shared_function));
-    memset(pointer_args, 0, total_size - sizeof(shared_function));            // Zero out the existing memory to prevent false reads on not overwritten bytes
-    strcpy(pointer_args, result);
+    // Assign the args to the shared memory
+    data->args = (void *)args;
 
     // Signal the halted thread
-    pthread_cond_signal(&(metadata->cond));
-    pthread_mutex_unlock(&(metadata->mutex));
+    pthread_cond_signal(&(data->func_cond));
+    // Wait on the caller signal to fetch the returned args
+    pthread_cond_wait(&(data->call_cond), &(data->mutex));
+
+    // Get the returned args as a Python object
+    PyObject *returned_args = (PyObject *)(data->args);
+
+    pthread_mutex_unlock(&(data->mutex));
     close(fd);
 
-    // Return a True object to indicate success
-    return Py_True;
+    // Return the returned args from the called function
+    return returned_args;
 }
 
 PyObject *call_function(PyObject *self, PyObject *args)
 {
     PyObject *name;
-    PyObject *tuple_args;
+    PyObject *py_args;
 
-    if (PyArg_ParseTuple(args, "O!O", &PyUnicode_Type, &name, &tuple_args) == -1)
+    if (!PyArg_ParseTuple(args, "O!O!", &PyUnicode_Type, &name, &PyTuple_Type, &py_args))
     {
-        PyErr_SetString(PyExc_ValueError, "Expected 'str' and 'tuple' type.");
-        return NULL;
-    }
-
-    if (!PyTuple_Check(tuple_args))
-    {
-        PyErr_SetString(PyExc_ValueError, "Expected 'str' and 'tuple' type.");
+        PyErr_SetString(PyExc_ValueError, "Expected a 'str' and 'tuple' type.");
         return NULL;
     }
 
     Py_INCREF(name);
-    Py_INCREF(tuple_args);
+    Py_INCREF(py_args);
 
-    void *state = call_shared_function(PyUnicode_AsUTF8(name), tuple_args);
+    // Call the shared function and get the return state
+    PyObject *return_state = call_shared_function(PyUnicode_AsUTF8(name), py_args);
 
     Py_DECREF(name);
-    Py_DECREF(tuple_args);
+    Py_DECREF(py_args);
 
-    return state;
+    // Return the return state to the user
+    return return_state;
+}
+
+PyObject *remove_function(PyObject *self, PyObject *args)
+{
+    PyObject *py_name;
+
+    if (!PyArg_ParseTuple(args, "O!", &PyUnicode_Type, &py_name))
+    {
+        PyErr_SetString(PyExc_ValueError, "Expected 1 'str' type.");
+        return NULL;
+    }
+
+    // Convert the name to a C string
+    char *name = PyUnicode_AsUTF8(py_name);
+
+    int fd = shm_open(name, O_RDWR, 0666);
+    if (fd == -1)
+    {
+        // Return 2 because it can't be opened. Throwing an error isn't necessary because we want it to be gone anyway
+        return PyLong_FromLong(2);
+    }
+
+    void *shm_ptr = mmap(NULL, sizeof(shared_function), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (shm_ptr == MAP_FAILED)
+    {
+        close(fd);
+        PyErr_SetString(PyExc_MemoryError, "Failed to map the shared memory.");
+        return NULL;
+    }
+
+    // Get the struct stored in the shared memory
+    shared_function *data = shm_ptr;
+
+    // Lock the mutex
+    pthread_mutex_lock(&(data->mutex));
+
+    // Set the activity byte to \x01 to indicate inactive
+    data->activity = '\x01';
+
+    // Signal the function thread to make it check the activity and exit
+    pthread_cond_signal(&(data->func_cond));
+    pthread_mutex_unlock(&(data->mutex));
+
+    // Close the shared memory address itself as well
+    if (!shm_unlink(name))
+    {
+        // Return 3 to indicate the function is unlinked but the shared memory isn't
+        return PyLong_FromLong(3);
+    }
+
+    // Return 1 to indicate success
+    return PyLong_FromLong(1);
 }
 
 static PyMethodDef methods[] = {
-    {"create_function", create_function, METH_VARARGS, "Create a shared function handle."},
-    {"link_function", link_function, METH_VARARGS, "Link a function to a shared function handle."},
+    {"create_memory", create_memory, METH_VARARGS, "Create a shared memory address."},
+    {"remove_memory", remove_memory, METH_VARARGS, "Remove a shared memory address."},
+    {"read_memory", read_memory, METH_VARARGS, "Get the value stored in a shared memory address."},
+    {"write_memory", write_memory, METH_VARARGS, "Write a value to a shared memory address."},
+
+    {"create_function", create_function, METH_VARARGS, "Create and link a shared function handle."},
+    {"remove_function", remove_function, METH_VARARGS, "Unlink a shared function and its memory address."},
     {"call_function", call_function, METH_VARARGS, "Call a function linked to a shared function handle."},
+
     {NULL, NULL, 0, NULL}
 };
 
-void module_cleanup(void *module)
+void membridge_module_cleanup(void *module)
 {
     Py_Finalize();
 }
@@ -407,7 +450,8 @@ static struct PyModuleDef membridge = {
     -1,
     methods,
     NULL, NULL, NULL,
-    module_cleanup};
+    membridge_module_cleanup
+};
 
 PyMODINIT_FUNC PyInit_membridge(void)
 {

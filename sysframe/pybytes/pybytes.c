@@ -1086,7 +1086,6 @@ PyObject *__to_dict(char *bytes, size_t *offset)
 
 PyObject *to_list(PyObject *py_bytes)
 {
-    Py_ssize_t bytes_len = PyBytes_Size(py_bytes);
     char *bytes = PyBytes_AsString(py_bytes);
 
     size_t offset = 0;
@@ -1111,7 +1110,6 @@ PyObject *to_value(PyObject *self, PyObject *args)
 
     Py_INCREF(py_bytes);
 
-    Py_ssize_t bytes_len = PyBytes_Size(py_bytes);
     char *bytes = PyBytes_AsString(py_bytes);
 
     // Check if the bytes object is a single value
@@ -1137,15 +1135,17 @@ PyObject *to_value(PyObject *self, PyObject *args)
 }
 
 static PyMethodDef methods[] = {
-    {"from_single_value", from_single_value, METH_VARARGS, "Convert a non-list value to bytes without the overhead of the regular from_value, considering you know the datatype."},
-    {"to_single_value", to_single_value, METH_VARARGS, "Convert a non-list bytes object to its value without the overhead of the regular to_value, considering you know the datatype."},
+    {"from_single_value", from_single_value, METH_VARARGS, "Convert a non-list value to bytes without the overhead of the regular from_value, if you know the datatype."},
+    {"to_single_value", to_single_value, METH_VARARGS, "Convert a non-list bytes object to its value without the overhead of the regular to_value, if you know the datatype."},
+
     {"from_value", from_value, METH_VARARGS, "Convert a value to a bytes object."},
     {"to_value", to_value, METH_VARARGS, "Convert a bytes object to a value."},
+
     {NULL, NULL, 0, NULL}
 };
 
 // Finalize the Python interpreter on exit
-void module_cleanup(void *module)
+void pybytes_module_cleanup(void *module)
 {
     Py_Finalize();
 }
@@ -1157,7 +1157,8 @@ static struct PyModuleDef pybytes = {
     -1,
     methods,
     NULL, NULL, NULL,
-    module_cleanup};
+    pybytes_module_cleanup
+};
 
 PyMODINIT_FUNC PyInit_pybytes(void)
 {

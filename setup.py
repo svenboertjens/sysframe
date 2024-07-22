@@ -14,12 +14,12 @@ with open("README.md", "r") as fh:
 
 setup(
     name="sysframe",
-    version="0.0.2",
+    version="0.0.8",
     
     author="Sven Boertjens",
     author_email="boertjens.sven@gmail.com",
     
-    description="A collection of modules useful for system programming with Python",
+    description="A collection of modules useful for system programming with Python. < STILL IN DEVELOPMENT >",
     
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -27,6 +27,10 @@ setup(
     url="https://github.com/svenboertjens/sysframe",
     
     packages=find_packages(),
+    include_package_data=True,
+    package_data={
+        '': ['*.pyi'],
+    },
     
     ext_modules=[
         Extension(
@@ -37,7 +41,7 @@ setup(
         Extension(
             'sysframe.membridge.membridge',
             ['sysframe/membridge/membridge.c'],
-            include_dirs=['sysframe/membridge', 'sysframe/pybytes']
+            include_dirs=['sysframe/membridge']
         )
     ],
     
