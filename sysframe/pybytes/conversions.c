@@ -43,6 +43,8 @@
 #define EXT_M  255 // Reserved for if we ever happen to run out of a single byte to represent stuff
 #define PROT_1 254 // Protocol 1
 
+#define PROT_C 200 // The current protocol
+
 // # 'Standard' values
 
 // String
@@ -158,33 +160,40 @@ PyObject *decimal_cl;
 
 static inline PyObject *unsigned_to_bytes(Py_ssize_t value)
 {
-    PyObject *num = PyLong_FromSsize_t(value);
+    // Calculate the number of bytes needed to represent the value
+    size_t num_bytes = 0;
+    Py_ssize_t temp_value = value;
     
-    size_t num_bytes = (_PyLong_NumBits(num) + 7) / 8;
-
-    unsigned char *bytes = (unsigned char *)malloc(num_bytes);
-
-    if (_PyLong_AsByteArray((PyLongObject *)num, bytes, num_bytes, 1, 0) == -1)
-    {
-        free(bytes);
-        return NULL;
+    while (temp_value > 0) {
+        temp_value >>= 8;
+        num_bytes++;
+    }
+    
+    if (num_bytes == 0) {
+        num_bytes = 1; // Ensure at least one byte for the value zero
     }
 
-    Py_DECREF(num);
+    // Allocate a buffer on the stack
+    unsigned char bytes[num_bytes];
 
-    PyObject *result = PyBytes_FromStringAndSize((const char *)bytes, num_bytes);
+    // Convert the integer value to a byte array (little-endian)
+    for (size_t i = 0; i < num_bytes; ++i)
+    {
+        bytes[i] = (value >> (i * 8)) & 0xFF;
+    }
 
-    free(bytes);
-    return result;
+    // Create a PyBytes object from the byte array
+    return PyBytes_FromStringAndSize((const char *)bytes, num_bytes);
 }
 
 static inline size_t bytes_to_size_t(const unsigned char *bytes, size_t length)
 {
     size_t num = 0;
 
+    // Convert the byte array back to a size_t value (little-endian)
     for (size_t i = 0; i < length; ++i)
     {
-        num += ((size_t)bytes[i]) << (i * 8);
+        num |= ((size_t)bytes[i]) << (i * 8);
     }
 
     return num;
@@ -251,15 +260,17 @@ static inline PyObject *from_integer(PyObject *value)
     if (!PyLong_Check(value))
         return NULL;
 
-    // Calculate number of bytes. Add 8 instead of 7 to include the sign bit
-    size_t num_bytes = (_PyLong_NumBits(value) + 8) / 8;
+    // Calculate number of bytes needed (unsigned, so no sign bit included)
+    size_t num_bytes = (Py_SIZE(value) > 0) ? ((_PyLong_NumBits(value) + 8) / 8) : 1;
 
     unsigned char *bytes = (unsigned char *)malloc(num_bytes);
+    if (!bytes) {
+        return NULL; // Handle memory allocation failure
+    }
 
-    if (_PyLong_AsByteArray((PyLongObject *)value, bytes, num_bytes, 1, 0) == -1)
-    {
+    if (_PyLong_AsByteArray((PyLongObject *)value, bytes, num_bytes, 1, 0) == -1) {
         free(bytes);
-        return NULL;
+        return NULL; // Handle conversion failure
     }
 
     PyObject *pybytes = PyBytes_FromStringAndSize((const char *)bytes, num_bytes);
@@ -718,6 +729,7 @@ static inline PyObject *from_memoryview(PyObject *value)
 
 // Pre-definition for the items in the iterables
 PyObject *from_any_value(PyObject *value);
+PyObject *from_any_iterable(PyObject *value, const unsigned char empty, const unsigned char one, const unsigned char two, const unsigned char dynamic);
 
 // Function to generate the metadata of a list type based on the parsed datachars
 static inline PyObject *list_type_metadata(Py_ssize_t size, char empty, char one, char two, char dynamic)
@@ -778,7 +790,7 @@ static inline PyObject *from_list(PyObject *value)
     for (Py_ssize_t i = 0; i < num_items; i++)
     {
         // Get the item from the list
-        PyObject *item = PyList_GetItem(value, i);
+        PyObject *item = PyList_GET_ITEM(value, i);
         // Convert it to bytes
         PyObject *item_bytes = from_any_value(item);
         // Add it to the bytes stack
@@ -1024,9 +1036,14 @@ PyObject *from_value(PyObject *value)
         return NULL;
     }
 
+    // Add a protocol byte to the bytes object
+    const char datachars[] = {PROT_1, '\0'};
+    PyObject *metabytes = PyBytes_FromStringAndSize(datachars, 1);
+    PyBytes_ConcatAndDel(&metabytes, result);
+
     // Incref for the user to hold it and return
-    Py_INCREF(result);
-    return result;
+    Py_INCREF(metabytes);
+    return metabytes;
 }
 
 // # Helper functions for the to-conversion functions
@@ -1657,40 +1674,64 @@ PyObject *to_value(PyObject *py_bytes)
 {
     // Get the PyBytes object as a C string
     const unsigned char *bytes = PyBytes_AsString(py_bytes);
-    // Get the length of this bytes object for memory allocation
-    Py_ssize_t bytes_length = PyBytes_Size(py_bytes);
 
-    // Create the bytedata struct
-    ByteData *bd = (ByteData *)malloc(sizeof(ByteData));
-    if (bd == NULL)
-    {
-        PyErr_NoMemory();
-        return NULL;
-    }
+    // Get the first character, being the protocol marker
+    const unsigned char protocol = *bytes;
 
-    // Allocate the space for the bytes object
-    bd->bytes = (const unsigned char *)malloc(bytes_length);
-    if (bd->bytes == NULL)
+    // Decide what to do based on the protocol version
+    switch (protocol)
     {
+    case PROT_C: // The current protocol
+    {
+        // Get the length of this bytes object for memory allocation
+        Py_ssize_t bytes_length = PyBytes_Size(py_bytes);
+
+        // Create the bytedata struct
+        ByteData *bd = (ByteData *)malloc(sizeof(ByteData));
+        if (bd == NULL)
+        {
+            PyErr_NoMemory();
+            return NULL;
+        }
+
+        // Allocate the space for the bytes object
+        bd->bytes = (const unsigned char *)malloc(bytes_length);
+        if (bd->bytes == NULL)
+        {
+            free(bd);
+            PyErr_NoMemory();
+            return NULL;
+        }
+
+        // Write the bytes and offset to the bytedata
+        memcpy(bd->bytes, bytes, (size_t)bytes_length);
+        bd->offset = 1; // Start at offset 1 to exclude the prototype marker
+        bd->max_offset = (size_t)bytes_length; // Set the max offset to the bytes length
+
+        // Use and return the to-any-value conversion function
+        PyObject *result = to_any_value(bd);
+        free(bd->bytes);
         free(bd);
-        PyErr_NoMemory();
+        
+        if (result == NULL)
+            return NULL;
+
+        Py_INCREF(result);
+        return result;
+    }
+    /*
+      There aren't any other protocols currently. When there are, their
+      de-serialization method is found in a stripped down version of the
+      conversion file of that protocol, which is called 'to_value_protX'
+      where 'X' is the protocol version. This will be used as follows:
+
+      `case PROT_X: return to_value_protX(py_bytes);`
+
+    */
+    default: // Likely received an invalid bytes object
+    {
+        PyErr_Format(PyExc_ValueError, "Likely received an invalid bytes object: invalid protocol marker (Prot. code: %i)", (int)protocol);
         return NULL;
     }
-
-    // Write the bytes and offset to the bytedata
-    memcpy(bd->bytes, bytes, (size_t)bytes_length);
-    bd->offset = 0; // Start at offset 0, which is the start of the bytes object
-    bd->max_offset = (size_t)bytes_length; // Set the max offset to the bytes length
-
-    // Use and return the to-any-value conversion function
-    PyObject *result = to_any_value(bd);
-    free(bd->bytes);
-    free(bd);
-    
-    if (result == NULL)
-        return NULL;
-
-    Py_INCREF(result);
-    return result;
+    }
 }
-
