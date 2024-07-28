@@ -1,7 +1,6 @@
 #define PY_SSIZE_T_CLEAN
 
 #include <Python.h>
-#include <datetime.h>
 #include <ctype.h>
 
 #include "conversions.h"
@@ -43,7 +42,7 @@
 #define EXT_M  255 // Reserved for if we ever happen to run out of a single byte to represent stuff
 #define PROT_1 254 // Protocol 1
 
-#define PROT_C 200 // The current protocol
+#define PROT_C PROT_1 // The current protocol
 
 // # 'Standard' values
 
@@ -333,7 +332,7 @@ static inline PyObject *from_integer(PyObject *value)
     return metabytes;
 }
 
-inline PyObject *from_float(PyObject *value)
+static inline PyObject *from_float(PyObject *value)
 {
     if (!PyFloat_Check(value))
         return NULL;
@@ -511,7 +510,7 @@ static inline PyObject *from_ellipsis()
     return PyBytes_FromStringAndSize((const char *)datachars, 1);
 }
 
-static inline PyObject *from_datetime(PyObject *value, char *datatype) // Datetype required for the type of datetime object
+static inline PyObject *from_datetime(PyObject *value, const char *datatype) // Datetype required for the type of datetime object
 {
     // This will hold the datachar
     char datachar = -1;
@@ -963,9 +962,6 @@ PyObject *from_any_value(PyObject *value)
     // Get the first character of the datatype
     const char datachar = *datatype;
 
-    // This will hold the result
-    PyObject *result;
-
     switch (datachar)
     {
     case 's': // String | Set
@@ -1071,7 +1067,6 @@ static inline int ensure_offset(ByteData *bd, size_t jump)
     // Check whether the offset plus the jump exceeds the max offset
     if (bd->offset + jump > bd->max_offset)
     {
-        printf("%zu > %zu\n", bd->offset + jump, bd->max_offset);
         // Set an error and return -1
         PyErr_SetString(PyExc_ValueError, "Likely received an invalid bytes object: offset exceeded max limit.");
         return -1;
@@ -1127,7 +1122,7 @@ static inline PyObject *to_int_gen(ByteData *bd, size_t length)
     if (ensure_offset(bd, length + 1) == -1) return NULL;
 
     // Create a Python integer from the bytes object
-    PyObject *value = _PyLong_FromByteArray((const char *)(&(bd->bytes[++bd->offset])), length, 1, 1);
+    PyObject *value = _PyLong_FromByteArray(&(bd->bytes[++bd->offset]), length, 1, 1);
 
     // Update the offset to start at the next item
     bd->offset += length;
@@ -1673,7 +1668,7 @@ static inline PyObject *to_any_value(ByteData *bd)
 PyObject *to_value(PyObject *py_bytes)
 {
     // Get the PyBytes object as a C string
-    const unsigned char *bytes = PyBytes_AsString(py_bytes);
+    const unsigned char *bytes = (const unsigned char *)PyBytes_AsString(py_bytes);
 
     // Get the first character, being the protocol marker
     const unsigned char protocol = *bytes;
@@ -1704,13 +1699,13 @@ PyObject *to_value(PyObject *py_bytes)
         }
 
         // Write the bytes and offset to the bytedata
-        memcpy(bd->bytes, bytes, (size_t)bytes_length);
+        memcpy((unsigned char *)(bd->bytes), bytes, (size_t)bytes_length);
         bd->offset = 1; // Start at offset 1 to exclude the prototype marker
         bd->max_offset = (size_t)bytes_length; // Set the max offset to the bytes length
 
         // Use and return the to-any-value conversion function
         PyObject *result = to_any_value(bd);
-        free(bd->bytes);
+        free((unsigned char *)(bd->bytes));
         free(bd);
         
         if (result == NULL)
@@ -1730,8 +1725,9 @@ PyObject *to_value(PyObject *py_bytes)
     */
     default: // Likely received an invalid bytes object
     {
-        PyErr_Format(PyExc_ValueError, "Likely received an invalid bytes object: invalid protocol marker (Prot. code: %i)", (int)protocol);
+        PyErr_Format(PyExc_ValueError, "Likely received an invalid bytes object: invalid protocol marker.");
         return NULL;
     }
     }
 }
+
