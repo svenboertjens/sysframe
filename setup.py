@@ -1,5 +1,6 @@
 from setuptools import setup, Extension, find_packages
 from setuptools.command.build_ext import build_ext as build_ext_orig
+import unittest
 
 class build_ext(build_ext_orig):
     def build_extensions(self):
@@ -12,14 +13,30 @@ class build_ext(build_ext_orig):
 with open("README.md", "r") as fh:
     long_description = fh.read()
 
+"""
+# The unpublished membridge extension
+
+Extension(
+    'sysframe.membridge.membridge',
+    sources=[
+        'sysframe/membridge/membridge.c',
+        'sysframe/pybytes/conversions.c'
+    ],
+    include_dirs=[
+        'sysframe/membridge',
+        'sysframe/pybytes'
+    ]
+)
+"""
+
 setup(
     name="sysframe",
-    version="0.0.8",
+    version="0.1.2",
     
     author="Sven Boertjens",
     author_email="boertjens.sven@gmail.com",
     
-    description="A collection of modules useful for system programming with Python. < STILL IN DEVELOPMENT >",
+    description="A collection of modules useful for system programming with Python. NOTE: STILL IN DEVELOPMENT",
     
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -28,6 +45,7 @@ setup(
     
     packages=find_packages(),
     include_package_data=True,
+    install_requires=[],
     package_data={
         '': ['*.pyi'],
     },
@@ -35,15 +53,18 @@ setup(
     ext_modules=[
         Extension(
             'sysframe.pybytes.pybytes',
-            ['sysframe/pybytes/pybytes.c'],
-            include_dirs=['sysframe/pybytes']
+            sources=[
+                'sysframe/pybytes/pybytes.c',
+                'sysframe/pybytes/conversions.c'
+            ],
+            include_dirs=[
+                'sysframe/pybytes'
+            ]
         ),
-        Extension(
-            'sysframe.membridge.membridge',
-            ['sysframe/membridge/membridge.c'],
-            include_dirs=['sysframe/membridge']
-        )
     ],
+    
+    test_suite='tests',
+    tests_require=['unittest'],
     
     cmdclass={'build_ext': build_ext},
     classifiers=[

@@ -12,6 +12,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <pthread.h>
+#include "conversions.h"
 
 typedef struct
 {
@@ -141,7 +142,7 @@ PyObject *read_memory(PyObject *self, PyObject *args)
     return PyBytes_FromString(value);
 }
 
-void write_shared_memory(const char *name, char *value)
+PyObject *write_shared_memory(const char *name, char *value)
 {
     int fd = shm_open(name, O_RDWR, 0666);
     if (fd == -1)
@@ -163,6 +164,9 @@ void write_shared_memory(const char *name, char *value)
 
     munmap(shm_ptr, SHM_SIZE);
     close(fd);
+
+    // Return True to indicate success
+    return Py_True;
 }
 
 PyObject *write_memory(PyObject *self, PyObject *args)
@@ -177,10 +181,7 @@ PyObject *write_memory(PyObject *self, PyObject *args)
     }
 
     // Write it to the shared memory address
-    write_shared_memory(PyUnicode_AsUTF8(name), PyBytes_AsString(value));
-
-    // Return True to indicate success
-    return Py_True;
+    return write_shared_memory(PyUnicode_AsUTF8(name), PyBytes_AsString(value));
 }
 
 typedef struct {
@@ -188,7 +189,7 @@ typedef struct {
     pthread_cond_t func_cond;
     pthread_cond_t call_cond;
     char activity;
-    void *args;
+    char args[1024]; // The max args size is 1024 bytes
 } shared_function;
 
 // Initiate a shared memory for a shared function
@@ -239,56 +240,59 @@ PyObject *create_shared_function(const char *name, PyObject *func)
     pthread_mutex_init(mutex, &mutex_attr);
 
     pthread_cond_t *func_cond = &(data->func_cond);
-    pthread_condattr_t cond_attr;
+    pthread_condattr_t func_cond_attr;
 
-    pthread_condattr_init(&cond_attr);
-    pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
-    pthread_cond_init(func_cond, &cond_attr);
+    pthread_condattr_init(&func_cond_attr);
+    pthread_condattr_setpshared(&func_cond_attr, PTHREAD_PROCESS_SHARED);
+    pthread_cond_init(func_cond, &func_cond_attr);
 
     pthread_cond_t *call_cond = &(data->call_cond);
-    pthread_condattr_t cond_attr;
+    pthread_condattr_t call_cond_attr;
 
-    pthread_condattr_init(&cond_attr);
-    pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
-    pthread_cond_init(call_cond, &cond_attr);
+    pthread_condattr_init(&call_cond_attr);
+    pthread_condattr_setpshared(&call_cond_attr, PTHREAD_PROCESS_SHARED);
+    pthread_cond_init(call_cond, &call_cond_attr);
 
-    // Set the activity byte to \x00 to indicate it's active
-    data->activity = '\x00';
+    // Set the activity byte to 0 to indicate it's active
+    data->activity = 0;
 
     // Set a while loop to repeatedly catch all signals
-    while (1)
-    {
+    while (1) {
         // Begin waiting on the cond to be signaled
-        pthread_mutex_lock(&mutex);
-        pthread_cond_wait(&func_cond, &mutex);
+        pthread_mutex_lock(mutex);
+        pthread_cond_wait(func_cond, mutex);
 
         // Check if the activity byte is set to inactive
-        if (data->activity == '\x01')
-        {
+        if (data->activity == 1) {
             // Break the loop to do cleanup
             break;
         }
 
+        char *args_bytes = data->args;
+
+        // Convert it to a Python object
+        PyObject *py_args = to_value(PyBytes_FromString(args_bytes));
+
         // Call the function and parse the args to it
-        PyObject *return_args = PyObject_CallFunction(func, "O", (PyObject *)(data->args));
+        PyObject *returned_args = PyObject_CallObject(func, py_args);
+        char *returned_bytes = PyBytes_AsString(from_value(py_args));
 
-        Py_INCREF(return_args);
-
-        // Set the args to the returned args so that the caller can fetch them
-        data->args = return_args;
+        // Copy the returned args to the buffer so that the caller can fetch them
+        strncpy(data->args, returned_bytes, 1023);
+        data->args[1023] = '\0'; // Ensure null-termination
 
         // Signal the caller that the returned args are set
-        pthread_cond_signal(&call_cond);
+        pthread_cond_signal(call_cond);
 
         // Unlock the mutex after performing the function call to prevent signals from missing this loop
-        pthread_mutex_unlock(&mutex);
+        pthread_mutex_unlock(mutex);
     }
 
     // Cleanup for when the loop breaks
     munmap(shm_ptr, sizeof(shared_function));
     close(fd);
 
-    // Return True to indicate we didn't exit due to a failure
+    // Return True to avoid getting a null-exception message
     return Py_True;
 }
 
@@ -297,14 +301,28 @@ PyObject *create_function(PyObject *self, PyObject *args)
     PyObject *name;
     PyObject *func;
 
-    if (!PyArg_ParseTuple(args, "O!O!", &PyUnicode_Type, &name, &PyFunction_Type, &func))
+    if (!PyArg_ParseTuple(args, "O!O", &PyUnicode_Type, &name, &func))
     {
-        PyErr_SetString(PyExc_ValueError, "Expected a 'str' and 'function' type.");
+        PyErr_SetString(PyExc_ValueError, "Expected a 'str' and 'callable' type.");
         return NULL;
     }
 
+    if (!PyCallable_Check(func))
+    {
+        PyErr_SetString(PyExc_ValueError, "Expected a 'str' and 'callable' type.");
+        return NULL;
+    }
+
+    Py_INCREF(name);
+    Py_INCREF(func);
+
     // Call the function to create the shared function
-    return create_shared_function(PyUnicode_AsUTF8(name), func);
+    PyObject *return_value = create_shared_function(PyUnicode_AsUTF8(name), func);
+
+    Py_DECREF(name);
+    Py_DECREF(func);
+
+    return return_value;
 }
 
 // Call a function linked to a shared memory conditional
@@ -331,8 +349,11 @@ PyObject *call_shared_function(const char *name, PyObject *args)
 
     pthread_mutex_lock(&(data->mutex));
 
-    // Assign the args to the shared memory
-    data->args = (void *)args;
+    const char *args_bytes = PyBytes_AsString(from_value(args));
+
+    // Assign the args to the shared memory buffer
+    strncpy(data->args, args_bytes, 1023);
+    data->args[1023] = '\0'; // Ensure null-termination
 
     // Signal the halted thread
     pthread_cond_signal(&(data->func_cond));
@@ -340,13 +361,16 @@ PyObject *call_shared_function(const char *name, PyObject *args)
     pthread_cond_wait(&(data->call_cond), &(data->mutex));
 
     // Get the returned args as a Python object
-    PyObject *returned_args = (PyObject *)(data->args);
+    char *returned_bytes = data->args;
+
+    // Convert it to a Python object
+    PyObject *returned_value = to_value(PyBytes_FromString(returned_bytes));
 
     pthread_mutex_unlock(&(data->mutex));
     close(fd);
 
     // Return the returned args from the called function
-    return returned_args;
+    return returned_value;
 }
 
 PyObject *call_function(PyObject *self, PyObject *args)
@@ -363,14 +387,14 @@ PyObject *call_function(PyObject *self, PyObject *args)
     Py_INCREF(name);
     Py_INCREF(py_args);
 
-    // Call the shared function and get the return state
-    PyObject *return_state = call_shared_function(PyUnicode_AsUTF8(name), py_args);
+    // Call the shared function and get the returned value
+    PyObject *return_value = call_shared_function(PyUnicode_AsUTF8(name), py_args);
 
     Py_DECREF(name);
     Py_DECREF(py_args);
 
-    // Return the return state to the user
-    return return_state;
+    // Return the returned value to the user
+    return return_value;
 }
 
 PyObject *remove_function(PyObject *self, PyObject *args)
@@ -407,8 +431,8 @@ PyObject *remove_function(PyObject *self, PyObject *args)
     // Lock the mutex
     pthread_mutex_lock(&(data->mutex));
 
-    // Set the activity byte to \x01 to indicate inactive
-    data->activity = '\x01';
+    // Set the activity byte to 1 to indicate inactive
+    data->activity = 1;
 
     // Signal the function thread to make it check the activity and exit
     pthread_cond_signal(&(data->func_cond));
