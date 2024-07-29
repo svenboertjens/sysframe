@@ -25,7 +25,7 @@
   The variables are also named after a simple structure, being the datatype in capitals
   followed by the type it stands for, such as 'STR_E' for an empty string, 'INT_1' for 
   an integer with 1 size byte, or 'BYTES_D' for a bytes object with dynamic size bytes.
-  For static values, it's marked with an 'S', so for a float it's 'FLOAT_S'. Other special
+  For static values, it's marked with an 'S', so for a float it's 'FLOAT_D'. Other special
   cases are explained when used.
 
   The global markers are used to mark certain patterns or issues during the
@@ -35,14 +35,23 @@
   The protocol markers end with the version sign, like 1 or 3 or whatever.
   The other markers have the M sign, which stands for marker.
 
+  Apart from the 'standard' serialization, this module also supports a custom SFS
+  protocol. SFS stands for Simple File System, as it works similarly to one, and
+  is just a simplified version of one. This allows for manipulation of a bytestream
+  without having to de-serialize it completely, manipulating the value, and then
+  serializing it again. This uses a mapping format which is used to locate the
+  item to modify, so that it can be pulled. modified, or removed.
+
 */
 
 // # 'Global' markers
 
-#define EXT_M  255 // Reserved for if we ever happen to run out of a single byte to represent stuff
-#define PROT_1 254 // Protocol 1
+#define EXT_M      255 // Reserved for if we ever happen to run out of a single byte to represent stuff
+#define PROT_STD_1 254 // Protocol 1, standard
+#define PROT_SFS_1 253 // Protocol 1, SFS (Simple File System)
 
-#define PROT_C PROT_1 // The current protocol
+#define PROT_STD_S PROT_STD_1 // The default STD protocol
+#define PROT_SFS_S PROT_SFS_1 // The default SFS protocol
 
 // # 'Standard' values
 
@@ -62,7 +71,7 @@
 #define INT_D2 10 //* very large, and a number that needs 65536 is unreachable in the practical sense.
 
 // Float
-#define FLOAT_S 11
+#define FLOAT_D 11
 
 // Boolean
 #define BOOL_T 12 // Use T for True values
@@ -143,6 +152,20 @@
 #define DECIMAL_2 55
 #define DECIMAL_D 56
 
+// # Status code definitions for from-value conversion (_SC = Status Code)
+
+#define SUCCESS_SC     0 // Successful conversion
+#define INCORRECT_SC   1 // Wrong datatype received
+#define UNSUPPORTED_SC 2 // Unsupported datatype
+#define EXCEPTION_SC   3 // Exceptions that set their own error message
+#define NESTDEPTH_SC   4 // The nesting depth is higher than allowed
+#define NOMEMORY_SC    5 // There was not enough memory available
+
+// # Other definitions
+
+#define ALLOC_SIZE 128 // The size to add when reallocating space for bytes
+#define MAX_NESTS  51  // The maximun amount of nests allowed
+
 // Datetime module classes
 PyObject *datetime_dt; // datetime
 PyObject *datetime_td; // timedelta
@@ -155,34 +178,175 @@ PyObject *uuid_cl;
 // Decimal module class
 PyObject *decimal_cl;
 
-// # Helper functions for converting Py_ssize_t to PyBytes, and C bytes to size_t
+// # Helper functions for the from-conversion functions
 
-static inline PyObject *unsigned_to_bytes(Py_ssize_t value)
+// Struct that holds the values converted to C bytes
+typedef struct {
+    Py_ssize_t offset;
+    Py_ssize_t max_size;
+    int nests;
+    unsigned char *bytes;
+} ValueData;
+
+// This function resizes the bytes of the ValueData when necessary
+static inline int auto_resize_vd(ValueData *vd, Py_ssize_t jump)
 {
-    // Calculate the number of bytes needed to represent the value
-    size_t num_bytes = 0;
-    Py_ssize_t temp_value = value;
-    
-    while (temp_value > 0) {
-        temp_value >>= 8;
-        num_bytes++;
-    }
-    
-    if (num_bytes == 0) {
-        num_bytes = 1; // Ensure at least one byte for the value zero
-    }
-
-    // Allocate a buffer on the stack
-    unsigned char bytes[num_bytes];
-
-    // Convert the integer value to a byte array (little-endian)
-    for (size_t i = 0; i < num_bytes; ++i)
+    // Check if we need to reallocate for more space with the given jump
+    if (vd->offset + jump > vd->max_size)
     {
-        bytes[i] = (value >> (i * 8)) & 0xFF;
+        // Update the max size
+        vd->max_size += jump + ALLOC_SIZE;
+        // Reallocate to the new max size
+        unsigned char *temp = (unsigned char *)realloc((void *)(vd->bytes), vd->max_size * sizeof(unsigned char));
+        if (temp == NULL) return -1; // Return -1 to indicate failure
+
+        // Update the bytes to point to the new allocated bytes
+        vd->bytes = temp;
     }
 
-    // Create a PyBytes object from the byte array
-    return PyBytes_FromStringAndSize((const char *)bytes, num_bytes);
+    // Return 1 to indicate success
+    return 1;
+}
+
+// This function updates the nest depth and whether we've reached the max nests
+static inline int increment_nests(ValueData *vd)
+{
+    // Increment the nest depth
+    vd->nests++;
+    // Check whether we reached the max nest depth
+    if (vd->nests == MAX_NESTS)
+        // Return -1 to indicate we have to quit
+        return -1;
+    
+    // Return 1 to indicate success
+    return 1;
+}
+
+// This function simplifies writing to the ValueData bytes
+static inline int write_vd(ValueData *vd, const unsigned char *bytes, Py_ssize_t size)
+{
+    // Resize if necessary
+    if (auto_resize_vd(vd, size) == -1) return NOMEMORY_SC;
+
+    // Copy the bytes to add to the bytes stack
+    memcpy(&(vd->bytes[vd->offset]), bytes, (size_t)size);
+
+    // Update the offset
+    vd->offset += size;
+
+    return SUCCESS_SC;
+}
+
+// Function to initiate the ValueData class
+static inline ValueData init_vd(PyObject *value, int *status)
+{
+    // Attempt to estimate what the max possible byte size will be
+    PyObject *value_as_str = PyObject_Repr(value);
+    Py_ssize_t max_size = Py_SIZE(value_as_str);
+
+    Py_DECREF(value_as_str);
+
+    // Create the struct itself
+    ValueData vd = {0, max_size, 0, (unsigned char *)malloc(max_size * sizeof(unsigned char))};
+    if (vd.bytes == NULL)
+    {
+        PyErr_SetString(PyExc_MemoryError, "No available memory space.");
+        // Set the status
+        *status = EXCEPTION_SC;
+        return vd;
+    }
+
+    // Write the protocol byte
+    const unsigned char protocol = PROT_STD_S;
+    write_vd(&vd, &protocol, 1); // No need to check for status because reallocation won't happen here
+
+    *status = SUCCESS_SC;
+
+    return vd;
+}
+
+// Function to calculate the number of bytes needed to represent a Py_ssize_t
+static inline Py_ssize_t get_num_bytes(Py_ssize_t value)
+{
+    // Determine the number of bytes needed
+    Py_ssize_t num_bytes = 0;
+    Py_ssize_t temp = value;
+    while (temp > 0) {
+        num_bytes++;
+        temp >>= 8;
+    }
+
+    return num_bytes;
+}
+
+// Function to write size bytes to the bytes
+static inline int write_size_bytes(ValueData *vd, Py_ssize_t value, Py_ssize_t num_bytes) {
+    // Resize if necessary
+    if (auto_resize_vd(vd, num_bytes) == -1) return NOMEMORY_SC;
+
+    // Store the bytes
+    for (Py_ssize_t i = 0; i < num_bytes; i++) {
+        vd->bytes[vd->offset + i] = (unsigned char)(value & 0xFF);
+        value >>= 8;
+    }
+
+    // Update the offset
+    vd->offset += num_bytes;
+
+    return SUCCESS_SC;
+}
+
+// Function to write the metadata with an E-1-2-D setup
+static inline int write_E12D_metadata(ValueData *vd, Py_ssize_t size, char empty, char one, char two, char dynamic)
+{
+    Py_ssize_t num_bytes = get_num_bytes(size);
+
+    // This will hold the datachar
+    unsigned char datachar;
+    int is_dynamic = 0;
+    switch (num_bytes)
+    {
+    case 0:
+    {
+        // Add the datachar for the size
+        datachar = empty;
+        break;
+    }
+    case 1:
+    {
+        datachar = one;
+        break;
+    }
+    case 2:
+    {
+        datachar = two;
+        break;
+    }
+    default:
+    {
+        datachar = dynamic;
+        is_dynamic = 1;
+        break;
+    }
+    }
+
+    // Add the datachar to the bytes
+    if (write_vd(vd, (const unsigned char *)&datachar, 1) == -1) return NOMEMORY_SC;
+
+    // Only write if there are bytes to be written
+    if (num_bytes != 0)
+    {
+        if (is_dynamic == 1)
+        {
+            // Write the dynamic size byte
+            if (write_size_bytes(vd, num_bytes, 1) == -1) return NOMEMORY_SC;
+        }
+
+        // Write the size bytes
+        if (write_size_bytes(vd, size, num_bytes) == -1) return NOMEMORY_SC;
+    }
+
+    return SUCCESS_SC;
 }
 
 static inline size_t bytes_to_size_t(const unsigned char *bytes, size_t length)
@@ -200,164 +364,122 @@ static inline size_t bytes_to_size_t(const unsigned char *bytes, size_t length)
 
 // # The from-conversion functions
 
-static inline PyObject *from_string(PyObject *value)
+static inline int from_string(ValueData *vd, PyObject *value) // VD is short for ValueData
 {
-    if (!PyUnicode_Check(value))
-        return NULL; // Error is set later
+    if (!PyUnicode_Check(value)) return INCORRECT_SC;
+    
+    // Get the string as C bytes and get its size
+    Py_ssize_t size;
+    const char *bytes = PyUnicode_AsUTF8AndSize(value, &size);
 
+    // Write the metadata
+    if (write_E12D_metadata(vd, size, STR_E, STR_1, STR_2, STR_D) == -1) return NOMEMORY_SC;
+    // Write the value itself
+    if (write_vd(vd, (const unsigned char *)bytes, size) == -1) return NOMEMORY_SC;
 
-    PyObject *pybytes = PyUnicode_AsEncodedString(value, "utf-8", "strict");
-
-    // Get the size of the byte array as a Py_ssize_t and convert the size to bytes
-    Py_ssize_t size = PyBytes_Size(pybytes);
-    PyObject *length_bytes = unsigned_to_bytes(size);
-    PyObject *metabytes; // This will hold the metadata for the bytes
-
-    if (size == 0) // Check if it's empty
-    {
-        Py_DECREF(length_bytes);
-        Py_XDECREF(metabytes);
-        Py_DECREF(pybytes);
-        // Return just the datachar for an empty string
-        const unsigned char datachars[] = {STR_E, '\0'};
-        return PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else if (size < 256) // Check whether we can store the size in a single byte
-    {
-        // Get a PyBytes object of the string 1 datachar
-        const unsigned char datachars[] = {STR_1, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else if (size < 65536) // Or two bytes (2 ^ 16 - 1 = 65535)
-    {
-        // Get a PyBytes object of the string 2 datachar
-        const unsigned char datachars[] = {STR_2, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else
-    {
-        // Get a PyBytes object of the string dynamic datachar
-        const unsigned char datachars[] = {STR_D, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-
-        // Get the length of the length representation bytes to allow for dynamic sizing
-        PyObject *length_bytes_len = unsigned_to_bytes(PyBytes_Size(length_bytes));
-
-        // Concat the length bytes on top
-        PyBytes_ConcatAndDel(&metabytes, length_bytes_len);
-    }
-
-    // Add the length bytes and string bytes
-    PyBytes_ConcatAndDel(&metabytes, length_bytes);
-    PyBytes_ConcatAndDel(&metabytes, pybytes);
-
-    return metabytes;
+    // Return success
+    return SUCCESS_SC;
 }
 
-static inline PyObject *from_integer(PyObject *value)
+static inline int from_integer(ValueData *vd, PyObject *value)
 {
-    if (!PyLong_Check(value))
-        return NULL;
+    if (!PyLong_Check(value)) return INCORRECT_SC;
 
-    // Calculate number of bytes needed (unsigned, so no sign bit included)
+    // Calculate number of bytes needed, including the sign bit
     size_t num_bytes = (Py_SIZE(value) > 0) ? ((_PyLong_NumBits(value) + 8) / 8) : 1;
 
-    unsigned char *bytes = (unsigned char *)malloc(num_bytes);
-    if (!bytes) {
-        return NULL; // Handle memory allocation failure
-    }
-
-    if (_PyLong_AsByteArray((PyLongObject *)value, bytes, num_bytes, 1, 0) == -1) {
+    unsigned char *bytes = (unsigned char *)malloc(num_bytes * sizeof(unsigned char));
+    if (!bytes)
+    {
         free(bytes);
-        return NULL; // Handle conversion failure
+        PyErr_SetString(PyExc_MemoryError, "No available memory space.");
+        return EXCEPTION_SC;
     }
 
-    PyObject *pybytes = PyBytes_FromStringAndSize((const char *)bytes, num_bytes);
+    if (_PyLong_AsByteArray((PyLongObject *)value, bytes, num_bytes, 1, 1) == -1) {
+        free(bytes);
+        return INCORRECT_SC;
+    }
 
-    free(bytes);
-
-    PyObject *metabytes;
+    // This will hold the datachar byte
+    unsigned char datachar;
+    int is_dynamic = 0;
     switch (num_bytes)
     {
     case 1:
     {
-        // Make a bytes object from the datachar
-        const unsigned char datachars[] = {INT_1, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
+        datachar = INT_1;
         break;
     }
     case 2:
     {
-        const unsigned char datachars[] = {INT_2, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
+        datachar = INT_2;
         break;
     }
     case 3:
     {
-        const unsigned char datachars[] = {INT_3, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
+        datachar = INT_3;
         break;
     }
     case 4:
     {
-        const unsigned char datachars[] = {INT_4, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
+        datachar = INT_4;
         break;
     }
     case 5:
     {
-        const unsigned char datachars[] = {INT_5, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
+        datachar = INT_5;
         break;
     }
     default:
     {
-        // Get the size of the byte array as a Py_ssize_t and convert the size to bytes
-        Py_ssize_t size = PyByteArray_Size(pybytes);
-        PyObject *length_bytes = unsigned_to_bytes(size);
-
-        // Get a PyBytes object of the integer dynamic datachar
-        const unsigned char datachars[] = {num_bytes < 256 ? INT_D1 : INT_D2, '\0'}; // Add D1 for 1 byte, else D2
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-
-        // Concat the length bytes on top
-        PyBytes_ConcatAndDel(&metabytes, length_bytes);
-
+        // Use dynamic 1 if number of bytes is smaller than 256, else dynamic 2
+        datachar = num_bytes < 256 ? INT_D1 : INT_D2;
+        is_dynamic = num_bytes < 256 ? 1 : 2;
         break;
     }
     }
-    // Add the number bytes on top
-    PyBytes_ConcatAndDel(&metabytes, pybytes);
+    
+    // Write the datachar
+    if (write_vd(vd, (const unsigned char *)&datachar, 1) == -1) return NOMEMORY_SC;
 
-    return metabytes;
-}
+    // Write the dynamic size bytes if necessary
+    if (is_dynamic > 0)
+    {
+        // Use the is_dynamic as that's set to the dynamic length to use
+        if (write_size_bytes(vd, num_bytes, is_dynamic) == -1) return NOMEMORY_SC;
+    }
 
-static inline PyObject *from_float(PyObject *value)
-{
-    if (!PyFloat_Check(value))
-        return NULL;
-
-    double c_num = PyFloat_AsDouble(value);
-    unsigned char *bytes = (unsigned char *)malloc(sizeof(double));
-    memcpy(bytes, &c_num, sizeof(double));
-
-    PyObject *pybytes = PyBytes_FromStringAndSize((const char *)bytes, sizeof(double));
-
+    // Write the value
+    if (write_vd(vd, (const unsigned char *)bytes, num_bytes) == -1) return NOMEMORY_SC;
     free(bytes);
 
-    // Get a PyBytes object of the float datachar
-    const unsigned char datachars[] = {FLOAT_S, '\0'};
-    PyObject *metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-    // Concat the length bytes and the float bytes on top
-    PyBytes_ConcatAndDel(&metabytes, pybytes);
-
-    return metabytes;
+    return SUCCESS_SC;
 }
 
-static inline PyObject *from_complex(PyObject *value)
+static inline int from_float(ValueData *vd, PyObject *value)
 {
-    if (!PyComplex_Check(value))
-        return NULL;
+    if (!PyFloat_Check(value)) return INCORRECT_SC;
+
+    // Get the float object as a string
+    PyObject *str = PyObject_Str(value);
+    // And convert it to a char array
+    Py_ssize_t size;
+    const unsigned char *bytes = (const unsigned char *)PyUnicode_AsUTF8AndSize(str, &size);
+
+    // Write the datachar and size byte
+    const unsigned char metabytes[] = {FLOAT_D, (const unsigned char)size};
+    if (write_vd(vd, metabytes, 2) == -1) return NOMEMORY_SC;
+
+    // Write the double converted to a string
+    if (write_vd(vd, bytes, size) == -1) return NOMEMORY_SC;
+
+    return SUCCESS_SC;
+}
+
+static inline int from_complex(ValueData *vd, PyObject *value)
+{
+    if (!PyComplex_Check(value)) return INCORRECT_SC;
 
     // Get the complex as a value
     Py_complex ccomplex = PyComplex_AsCComplex(value);
@@ -369,511 +491,335 @@ static inline PyObject *from_complex(PyObject *value)
     memcpy(bytes, &ccomplex.real, sizeof(double));
     memcpy(bytes + sizeof(double), &ccomplex.imag, sizeof(double));
 
-    // Convert it to a PyBytes object
-    PyObject *pybytes = PyBytes_FromStringAndSize((const char *)bytes, 2 * sizeof(double));
+    // Write the datachar
+    const unsigned char datachar = COMPLEX_S;
+    if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
 
+    // Write the double bytes
+    if (write_vd(vd, (const unsigned char *)bytes, 2 * sizeof(double)) == -1) return NOMEMORY_SC;
     free(bytes);
 
-    // Only add the complex type datachar, the length is consistently 16
-    const unsigned char datachars[] = {COMPLEX_S, '\0'};
-    PyObject *metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-    PyBytes_ConcatAndDel(&metabytes, pybytes);
-
-    return metabytes;
+    return SUCCESS_SC;
 }
 
-static inline PyObject *from_boolean(PyObject *value)
+static inline int from_boolean(ValueData *vd, PyObject *value)
 {
-    if (!PyBool_Check(value))
-        return NULL;
+    if (!PyBool_Check(value)) return INCORRECT_SC;
 
+    // Write a true datachar if the value is true, else a false datachar
     if (PyObject_IsTrue(value))
     {
-        const unsigned char datachars[] = {BOOL_T, '\0'};
-        return PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-
-    const unsigned char datachars[] = {BOOL_F, '\0'};
-    return PyBytes_FromStringAndSize((const char *)datachars, 1);
-}
-
-static inline PyObject *from_bytes(PyObject *value)
-{
-    if (!PyBytes_Check(value))
-        return NULL;
-
-    // Get the size of the byte array as a Py_ssize_t and convert the size to bytes
-    Py_ssize_t size = PyBytes_Size(value);
-    PyObject *length_bytes = unsigned_to_bytes(size);
-    PyObject *metabytes = NULL; // This will hold the metadata for the bytes
-
-    if (size == 0)
-    {
-        Py_DECREF(length_bytes);
-        Py_XDECREF(metabytes);
-        // Return the datachar for an empty bytes obj
-        const unsigned char datachars[] = {BYTES_E, '\0'};
-        return PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else if (size < 256) // Check whether we can store the size in a single byte
-    {
-        // Get a PyBytes object of the bytes obj 1 datachar
-        const unsigned char datachars[] = {BYTES_1, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else if (size < 65536) // Or two bytes
-    {
-        // Get a PyBytes object of the string 2 datachar
-        const unsigned char datachars[] = {BYTES_2, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
+        const unsigned char datachar = BOOL_T;
+        if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
     }
     else
     {
-        // Get a PyBytes object of the string dynamic datachar
-        const unsigned char datachars[] = {BYTES_D, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-
-        // Get the length of the length representation bytes to allow for dynamic sizing
-        PyObject *length_bytes_len = unsigned_to_bytes(PyBytes_Size(length_bytes));
-
-        // Concat the length bytes on top
-        PyBytes_ConcatAndDel(&metabytes, length_bytes_len);
+        const unsigned char datachar = BOOL_F;
+        if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
     }
 
-    // Add the length bytes and bytes obj
-    PyBytes_ConcatAndDel(&metabytes, length_bytes);
-    PyBytes_Concat(&metabytes, value); // Don't delete, it's a value from the user
-
-    return metabytes;
+    return SUCCESS_SC;
 }
 
-static inline PyObject *from_bytearray(PyObject *value)
+static inline int from_bytes(ValueData *vd, PyObject *value)
 {
-    if (!PyByteArray_Check(value))
+    if (!PyBytes_Check(value)) return INCORRECT_SC;
+
+    // Get the string as C bytes and get its size
+    Py_ssize_t size;
+    char *bytes;
+    
+    if (PyBytes_AsStringAndSize(value, &bytes, &size) == -1)
     {
-        return NULL;
+        // Could not get the bytes' string and value
+        PyErr_SetString(PyExc_RuntimeError, "Failed to get the C string representative of a bytes object.");
+        return EXCEPTION_SC;
     }
 
-    // Get the size of the byte array as a Py_ssize_t and convert the size to bytes
-    Py_ssize_t size = PyByteArray_Size(value);
-    PyObject *length_bytes = unsigned_to_bytes(size);
-    PyObject *metabytes = NULL; // This will hold the metadata for the bytearray
+    // Write the metadata
+    if (write_E12D_metadata(vd, size, BYTES_E, BYTES_1, BYTES_2, BYTES_D) == -1) return NOMEMORY_SC;
+    // Write the value itself
+    if (write_vd(vd, (const unsigned char *)bytes, size) == -1) return NOMEMORY_SC;
 
-    if (size == 0)
-    {
-        Py_DECREF(length_bytes);
-        Py_XDECREF(metabytes);
-        // Return the datachar for an empty bytearray
-        const unsigned char datachars[] = {BYTEARR_E, '\0'};
-        return PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else if (size < 256) // Check whether we can store the size in a single byte
-    {
-        // Get a PyBytes object of the bytearray 255 datachar
-        const unsigned char datachars[] = {BYTEARR_1, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else if (size < 65536) // Or two bytes
-    {
-        // Get a PyBytes object of the string 65535 datachar
-        const unsigned char datachars[] = {BYTEARR_2, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else
-    {
-        // Get a PyBytes object of the string dynamic datachar
-        const unsigned char datachars[] = {BYTEARR_D, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-
-        // Get the length of the length representation bytes to allow for dynamic sizing
-        PyObject *length_bytes_len = unsigned_to_bytes(PyBytes_Size(length_bytes));
-
-        // Concat the length bytes on top
-        PyBytes_ConcatAndDel(&metabytes, length_bytes_len);
-    }
-    // Add the length bytes and bytearray
-    PyBytes_ConcatAndDel(&metabytes, length_bytes);
-    PyBytes_Concat(&metabytes, value); // Don't delete, it's a value from the user
-
-    return metabytes;
+    // Return success
+    return SUCCESS_SC;
 }
 
-static inline PyObject *from_nonetype() // Value isn't sent as it's static, thus not required
+static inline int from_bytearray(ValueData *vd, PyObject *value)
 {
-    const unsigned char datachars[] = {NONE_S, '\0'};
-    return PyBytes_FromStringAndSize((const char *)datachars, 1);
+    if (!PyByteArray_Check(value)) return INCORRECT_SC;
+
+    // Get the string as C bytes
+    const char *bytes = (const char *)PyByteArray_AsString(value);
+    // Get the size of the bytes object
+    Py_ssize_t size = (Py_ssize_t)strlen(bytes);
+
+    // Write the metadata
+    if (write_E12D_metadata(vd, size, BYTEARR_E, BYTEARR_1, BYTEARR_2, BYTEARR_D) == -1) return NOMEMORY_SC;
+    // Write the value itself
+    if (write_vd(vd, (const unsigned char *)bytes, size) == -1) return NOMEMORY_SC;
+
+    // Return success
+    return SUCCESS_SC;
 }
 
-static inline PyObject *from_ellipsis()
+// Function for static values, like NoneType and Ellipsis
+static inline int from_static_value(ValueData *vd, const unsigned char datachar)
 {
-    const unsigned char datachars[] = {ELLIPSIS_S, '\0'};
-    return PyBytes_FromStringAndSize((const char *)datachars, 1);
+    if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
+    return SUCCESS_SC;
 }
 
-static inline PyObject *from_datetime(PyObject *value, const char *datatype) // Datetype required for the type of datetime object
+static inline int from_datetime(ValueData *vd, PyObject *value, const char *datatype) // Datetype required for the type of datetime object
 {
     // This will hold the datachar
-    char datachar = -1;
+    unsigned char datachar;
 
     // Create an iso format string of the datetime object
     PyObject *iso = PyObject_CallMethod(value, "isoformat", NULL);
-    if (iso == NULL)
-        return NULL;
+    if (iso == NULL) return INCORRECT_SC;
     
-    // Convert the iso string to a Pybytes object
-    PyObject *bytes = PyUnicode_AsEncodedString(iso, "utf-8", "strict");
+    // Convert the iso string to bytes
+    Py_ssize_t size;
+    const unsigned char *bytes = (const unsigned char *)PyUnicode_AsUTF8AndSize(iso, &size);
 
     Py_DECREF(iso);
 
     // Decide the datachar of the datetime object type, and do type checks
     if (strcmp("datetime.datetime", datatype) == 0)
     {
-        if (!PyObject_IsInstance(value, datetime_dt))
-        {
-            Py_DECREF(bytes);
-            PyErr_SetString(PyExc_ValueError, "Expected a datetime.datetime object.");
-            return NULL;
-        }
+        if (!PyObject_IsInstance(value, datetime_dt)) return INCORRECT_SC;
         datachar = DATETIME_DT;
     }
     else if (strcmp("datetime.date", datatype) == 0)
     {
-        if (!PyObject_IsInstance(value, datetime_d))
-        {
-            Py_DECREF(bytes);
-            return NULL;
-        }
+        if (!PyObject_IsInstance(value, datetime_d)) return INCORRECT_SC;
         datachar = DATETIME_D;
     }
     else if (strcmp("datetime.timedelta", datatype) == 0)
     {
-        Py_DECREF(bytes);
         // TimeDelta objects aren't supported yet, mention explicitly
         PyErr_SetString(PyExc_ValueError, "DateTime.TimeDelta objects are not supported yet, though they will be later.");
-        return NULL;
+        return EXCEPTION_SC;
     }
     else if (strcmp("datetime.time", datatype) == 0)
     {
-        if (!PyObject_IsInstance(value, datetime_t))
-        {
-            Py_DECREF(bytes);
-            return NULL;
-        }
+        if (!PyObject_IsInstance(value, datetime_t)) return INCORRECT_SC;
         datachar = DATETIME_T;
     }
     else
-    {
-        Py_DECREF(bytes);
-        return NULL;
-    }
+        return INCORRECT_SC;
 
-    // Start the bytes object off with the datachar
-    PyObject *metabytes = PyBytes_FromStringAndSize(&datachar, 1);
-    // Convert the size of the bytes object to bytes
-    PyObject *size_bytes = unsigned_to_bytes(PyBytes_Size(bytes));
+    // Write the datachar
+    if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
+    // Write the size
+    if (write_size_bytes(vd, size, get_num_bytes(size)) == -1) return NOMEMORY_SC;
+    // Write the bytes
+    if (write_vd(vd, bytes, size) == -1) return NOMEMORY_SC;
 
-    // Add the byte objects on top of each other
-    PyBytes_ConcatAndDel(&metabytes, size_bytes);
-    PyBytes_ConcatAndDel(&metabytes, bytes);
-
-    return metabytes;
+    return SUCCESS_SC;
 }
 
-static inline PyObject *from_decimal(PyObject *value)
+static inline int from_decimal(ValueData *vd, PyObject *value)
 {
-    if (!PyObject_IsInstance(value, decimal_cl))
-        return NULL;
+    if (!PyObject_IsInstance(value, decimal_cl)) return INCORRECT_SC;
 
     // Get the string representation of the Decimal object
     PyObject* str = PyObject_Str(value);
     if (str == NULL)
-        return NULL;
+        return INCORRECT_SC;
 
-    // Convert the string to bytes
-    PyObject* bytes = PyUnicode_AsEncodedString(str, "utf-8", "strict");
-    Py_DECREF(str);
+    // Get the string as C bytes and get its size
+    Py_ssize_t size;
+    const char *bytes = PyUnicode_AsUTF8AndSize(str, &size);
 
-    // Get the size of the bytes object as another bytes object
-    Py_ssize_t num_bytes = PyBytes_Size(bytes);
-    PyObject *metabytes;
+    // Write the metadata. Pass the empty arg as 0 as that's impossible with decimal values
+    if (write_E12D_metadata(vd, size, 0, DECIMAL_1, DECIMAL_2, DECIMAL_D) == -1) return NOMEMORY_SC;
+    // Write the value itself
+    if (write_vd(vd, (const unsigned char *)bytes, size) == -1) return NOMEMORY_SC;
 
-    // See whether we can use the one size byte method
-    if (num_bytes < 256)
-    {
-        const unsigned char datachars[] = {DECIMAL_1, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-
-        // Create the size bytes and add it to the metabytes
-        PyObject *size_bytes = unsigned_to_bytes(num_bytes);
-        PyBytes_ConcatAndDel(&metabytes, size_bytes);
-    }
-    else if (num_bytes < 65536)
-    {
-        const unsigned char datachars[] = {DECIMAL_2, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-
-        // Create the size bytes and add it to the metabytes
-        PyObject *size_bytes = unsigned_to_bytes(num_bytes);
-        PyBytes_ConcatAndDel(&metabytes, size_bytes);
-    }
-    else
-    {
-        const unsigned char datachars[] = {DECIMAL_D, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-
-        // Create the size bytes, and the bytes of the size of the size bytes
-        PyObject *size_bytes = unsigned_to_bytes(num_bytes);
-        PyObject *size_bytes_bytes = unsigned_to_bytes(PyBytes_Size(size_bytes));
-
-        PyBytes_ConcatAndDel(&metabytes, size_bytes_bytes);
-        PyBytes_ConcatAndDel(&metabytes, size_bytes);
-    }
-
-    // Add the bytes to the metadata and return it
-    PyBytes_ConcatAndDel(&metabytes, bytes);
-    return metabytes;
+    // Return success
+    return SUCCESS_SC;
 }
 
-static inline PyObject *from_uuid(PyObject *value)
+static inline int from_uuid(ValueData *vd, PyObject *value)
 {
-    if (!PyObject_IsInstance(value, uuid_cl))
-        return NULL;
+    if (!PyObject_IsInstance(value, uuid_cl)) return INCORRECT_SC;
     
     // Get the hexadecimal representation of the UUID
     PyObject* hex_str = PyObject_GetAttrString(value, "hex");
     if (hex_str == NULL)
     {
-        Py_XDECREF(hex_str);
-        PyErr_SetString(PyExc_RuntimeError, "Failed to get the UUID hex representation.");
-        return NULL;
+        PyErr_SetString(PyExc_RuntimeError, "Could not get the hex representation of a UUID.");
+        return EXCEPTION_SC;
     }
 
-    // Convert the hex string to bytes
-    PyObject* bytes = PyUnicode_AsEncodedString(hex_str, "utf-8", "strict");
-    if (bytes == NULL)
-    {
-        Py_DECREF(hex_str);
-        Py_XDECREF(bytes);
-        PyErr_SetString(PyExc_RuntimeError, "Failed to convert hex string to bytes.");
-        return NULL;
-    }
+    // Get the string as C bytes
+    const char *bytes = PyUnicode_AsUTF8(hex_str);
 
-    Py_DECREF(hex_str);
+    // Write the datachar
+    const unsigned char datachar = UUID_S;
+    if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
+    // Write the value itself
+    if (write_vd(vd, (const unsigned char *)bytes, 32) == -1) return NOMEMORY_SC; // Static size of 32
 
-    // Start off with the UUID datachar
-    const unsigned char datachars[] = {UUID_S, '\0'};
-    PyObject *metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-
-    // Add the bytes on top and return it
-    PyBytes_ConcatAndDel(&metabytes, bytes);
-    return metabytes;
+    // Return success
+    return SUCCESS_SC;
 }
 
-static inline PyObject *from_memoryview(PyObject *value)
+static inline int from_memoryview(ValueData *vd, PyObject *value)
 {
-    if (!PyMemoryView_Check(value))
-        return NULL;
+    if (!PyMemoryView_Check(value)) return INCORRECT_SC;
 
     // Get the underlying buffer from the memoryview
-    Py_buffer* view = PyMemoryView_GET_BUFFER(value);
-
-    // Create a bytes object from the buffer
-    PyObject* bytes = PyBytes_FromStringAndSize((const char*)view->buf, view->len);
-    if (bytes == NULL) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to create bytes object from memoryview.");
-        return NULL;
-    }
-
-    // This will hold the metabytes and the size bytes
-    PyObject *metabytes;
-
-    // Get the size of the bytes object
-    Py_ssize_t size = PyBytes_Size(bytes);
-    // Convert the size to bytes
-    PyObject *size_bytes = unsigned_to_bytes(size);
-
-    // Check what size the bytes object is for the suited datachar
-    if (size == 0)
+    Py_buffer view;
+    if (PyObject_GetBuffer(value, &view, PyBUF_READ) == -1)
     {
-        const unsigned char datachars[] = {MEMVIEW_E, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else if (size < 256)
-    {
-        const unsigned char datachars[] = {MEMVIEW_1, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else if (size < 65535)
-    {
-        const unsigned char datachars[] = {MEMVIEW_2, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else
-    {
-        const unsigned char datachars[] = {MEMVIEW_D, '\0'};
-        metabytes = PyBytes_FromStringAndSize((const char *)datachars, 1);
-
-        // Get the size of the size bytes as bytes, and add it to the metabytes
-        PyObject *size_bytes_bytes = unsigned_to_bytes(PyBytes_Size(size_bytes));
-        PyBytes_ConcatAndDel(&metabytes, size_bytes_bytes);
+        PyErr_SetString(PyExc_RuntimeError, "Could not get the buffer of a memoryview object.");
+        return EXCEPTION_SC;
     }
 
-    // Add the bytes and return it
-    PyBytes_ConcatAndDel(&metabytes, size_bytes);
-    PyBytes_ConcatAndDel(&metabytes, bytes);
-    return metabytes;
+    // Write the datachar and size bytes
+    if (write_E12D_metadata(vd, view.len, MEMVIEW_E, MEMVIEW_1, MEMVIEW_2, MEMVIEW_D) == -1) return NOMEMORY_SC;
+    // Write the buffer
+    if (write_vd(vd, (const unsigned char *)view.buf, view.len) == -1) return NOMEMORY_SC;
+
+    PyBuffer_Release(&view);
+
+    return SUCCESS_SC;
 }
 
 // # Functions for converting list type values to bytes and their helper functions
 
 // Pre-definition for the items in the iterables
-PyObject *from_any_value(PyObject *value);
-PyObject *from_any_iterable(PyObject *value, const unsigned char empty, const unsigned char one, const unsigned char two, const unsigned char dynamic);
+int from_any_value(ValueData *vd, PyObject *value);
 
-// Function to generate the metadata of a list type based on the parsed datachars
-static inline PyObject *list_type_metadata(Py_ssize_t size, char empty, char one, char two, char dynamic)
+static inline int from_list(ValueData *vd, PyObject *value)
 {
-    // Check the size of the iterable
-    if (size == 0)
-    {
-        // Add the datachar in a string type with a null-terminator and return it as a Python bytes object
-        const unsigned char datachars[2] = {empty, '\0'};
-        return PyBytes_FromStringAndSize((const char *)datachars, 1);
-    }
-    else
-    {
-        // Get the size we need to add as bytes
-        PyObject *size_bytes = unsigned_to_bytes(size);
-        // And the size of the size bytes
-        Py_ssize_t size_bytes_size = PyBytes_Size(size_bytes);
+    if (!PyList_Check(value)) return INCORRECT_SC;
+    
+    // Increment the nest depth and return if it's too deep
+    if (increment_nests(vd) == -1) return NESTDEPTH_SC;
 
-        // This will hold the metadata
-        PyObject *metadata;
-
-        // Check which size datachar we should use now
-        if (size_bytes_size == 1)
-        {
-            const unsigned char datachars[2] = {one, '\0'};
-            metadata = PyBytes_FromStringAndSize((const char *)datachars, 1);
-        }
-        else if (size_bytes_size == 2)
-        {
-            const unsigned char datachars[2] = {two, '\0'};
-            metadata = PyBytes_FromStringAndSize((const char *)datachars, 1);
-        }
-        else
-        {
-            const unsigned char datachars[2] = {dynamic, '\0'};
-            metadata = PyBytes_FromStringAndSize((const char *)datachars, 1);
-
-            // Add the size of the size bytes to the metadata as its dynamic byte size
-            PyObject *size_bytes_bytes = unsigned_to_bytes(size_bytes_size);
-            PyBytes_ConcatAndDel(&metadata, size_bytes_bytes);
-        }
-
-        // Add the size bytes and return the metadata
-        PyBytes_ConcatAndDel(&metadata, size_bytes);
-        return metadata;
-    }
-}
-
-static inline PyObject *from_list(PyObject *value)
-{
     // The number of items in the list
     Py_ssize_t num_items = PyList_Size(value);
 
-    // This will be stacked onto by the item bytes
-    PyObject *bytes = list_type_metadata(num_items, LIST_E, LIST_1, LIST_2, LIST_D);
+    // Write the metadata
+    if (write_E12D_metadata(vd, num_items, LIST_E, LIST_1, LIST_2, LIST_D) == -1) return NOMEMORY_SC;
 
     // Go over all items in the list
     for (Py_ssize_t i = 0; i < num_items; i++)
     {
         // Get the item from the list
         PyObject *item = PyList_GET_ITEM(value, i);
-        // Convert it to bytes
-        PyObject *item_bytes = from_any_value(item);
-        // Add it to the bytes stack
-        PyBytes_ConcatAndDel(&bytes, item_bytes);
+        // Write it to the valuedata and get the status
+        int status = from_any_value(vd, item);
+
+        // Return the status code if it's not success
+        if (status != SUCCESS_SC) return status;
     }
 
-    return bytes;
+    // Decrement the nest depth
+    vd->nests--;
+
+    return SUCCESS_SC;
 }
 
-static inline PyObject *from_tuple(PyObject *value)
+static inline int from_tuple(ValueData *vd, PyObject *value)
 {
+    if (!PyTuple_Check(value)) return INCORRECT_SC;
+    
+    // Increment the nest depth and return if it's too deep
+    if (increment_nests(vd) == -1) return NESTDEPTH_SC;
+
     // The number of items in the tuple
     Py_ssize_t num_items = PyTuple_Size(value);
 
-    // This will be stacked onto by the item bytes
-    PyObject *bytes = list_type_metadata(num_items, TUPLE_E, TUPLE_1, TUPLE_2, TUPLE_D);
+    // Write the metadata
+    if (write_E12D_metadata(vd, num_items, TUPLE_E, TUPLE_1, TUPLE_2, TUPLE_D) == -1) return NOMEMORY_SC;
 
     // Go over all items in the tuple
     for (Py_ssize_t i = 0; i < num_items; i++)
     {
         // Get the item from the list
         PyObject *item = PyTuple_GetItem(value, i);
-        // Convert it to bytes
-        PyObject *item_bytes = from_any_value(item);
-        // Add it to the bytes stack
-        PyBytes_ConcatAndDel(&bytes, item_bytes);
+        // Write it to the valuedata and get the status
+        int status = from_any_value(vd, item);
+
+        // Return the status code if it's not success
+        if (status != SUCCESS_SC) return status;
     }
 
-    return bytes;
+    // Decrement the nest depth
+    vd->nests--;
+
+    return SUCCESS_SC;
 }
 
 // Function fro both sets and frozensets
-static inline PyObject *from_set_frozenset(PyObject *value, int is_frozenset)
+static inline int from_set_frozenset(ValueData *vd, PyObject *value, int is_frozenset)
 {
-    // Create an iterable from the set so that we can go over the items
-    PyObject *iter = PyObject_GetIter(value);
-    if (iter == NULL)
-        return NULL;
-
+    if (!PySet_Check(value) && !PyFrozenSet_Check(value)) return INCORRECT_SC;
+    
+    // Increment the nest depth and return if it's too deep
+    if (increment_nests(vd) == -1) return NESTDEPTH_SC;
+    
+    // Create an iterator from the set so that we can count the items
+    PyObject *count_iter = PyObject_GetIter(value);
+    if (count_iter == NULL)
+    {
+        PyErr_SetString(PyExc_RuntimeError, "Could not get an iterator of a set type.");
+        return EXCEPTION_SC;
+    }
+    
     // This will hold the number of items in the iterator
     Py_ssize_t num_items = 0;
-    // This will be stacked onto by the item bytes
-    PyObject *bytes = PyBytes_FromStringAndSize(NULL, 0);
 
-    // Go over all items in the set
-    PyObject *item;
-    while ((item = PyIter_Next(iter)) != NULL)
+    // Quickly go over the iterator to get the number of items
+    while (PyIter_Next(count_iter) != NULL)
     {
-        // Increment the number of items
         num_items++;
-        
-        // Convert it to bytes
-        PyObject *item_bytes = from_any_value(item);
-        Py_DECREF(item);
-
-        if (item_bytes == NULL) {
-            Py_DECREF(iter);
-            Py_DECREF(bytes);
-            return NULL;
-        }
-
-        // Add it to the bytes stack
-        PyBytes_ConcatAndDel(&bytes, item_bytes);
     }
 
-    Py_DECREF(iter);
-
-    PyObject *metabytes;
+    // Write the metadata
     if (is_frozenset == 1)
     {
-        metabytes = list_type_metadata(num_items, FSET_E, FSET_1, FSET_2, FSET_D);
+        if (write_E12D_metadata(vd, num_items, FSET_E, FSET_1, FSET_2, FSET_D) == -1) return NOMEMORY_SC;
     }
     else
     {
-        metabytes = list_type_metadata(num_items, SET_E, SET_1, SET_2, SET_D);
+        if (write_E12D_metadata(vd, num_items, SET_E, SET_1, SET_2, SET_D) == -1) return NOMEMORY_SC;
     }
 
-    // Add the bytes stack to the metabytes and return it
-    PyBytes_ConcatAndDel(&metabytes, bytes);
-    return metabytes;
+    // Get another iterator of the set to write the items
+    PyObject *iter = PyObject_GetIter(value);
+    if (iter == NULL)
+    {
+        PyErr_SetString(PyExc_RuntimeError, "Could not get an iterator of a set type.");
+        return EXCEPTION_SC;
+    }
+
+    // Go over the iterator and write the items
+    for (Py_ssize_t i = 0; i < num_items; i++)
+    {
+        // Get the item from the iterator
+        PyObject *item = PyIter_Next(iter);
+        // Write it to the valuedata and get the status
+        int status = from_any_value(vd, item);
+
+        Py_DECREF(item);
+
+        // Return the status code if it's not success
+        if (status != SUCCESS_SC) return status;
+    }
+
+    // Decrement the nest depth
+    vd->nests--;
+
+    return SUCCESS_SC;
 }
 
-
-static inline PyObject *from_dict(PyObject *value)
+static inline int from_dict(ValueData *vd, PyObject *value)
 {
     /*
       A dict type is treated kind of as a list, but the difference
@@ -881,12 +827,16 @@ static inline PyObject *from_dict(PyObject *value)
       dict in the order of 'key1, value1, key2, value2, etc..'.
 
     */
+    if (!PyDict_Check(value)) return INCORRECT_SC;
+    
+    // Increment the nest depth and return if it's too deep
+    if (increment_nests(vd) == -1) return NESTDEPTH_SC;
 
     // Get the amount of item pairs in the dict
     Py_ssize_t num_pairs = PyDict_Size(value);
 
-    // Get the metadata for the dict and use this as the base of our bytes object
-    PyObject *bytes = list_type_metadata(num_pairs, DICT_E, DICT_1, DICT_2, DICT_D);
+    // Write the metadata
+    if (write_E12D_metadata(vd, num_pairs, DICT_E, DICT_1, DICT_2, DICT_D) == -1) return NOMEMORY_SC;
 
     // Get the items of the dict in a list
     PyObject *iterable = PyDict_Items(value);
@@ -895,67 +845,29 @@ static inline PyObject *from_dict(PyObject *value)
     for (Py_ssize_t i = 0; i < num_pairs; i++)
     {
         // Get the pair of the items, which is a tuple with the key on 0 and value on 1
-        PyObject *pair = PyList_GetItem(iterable, i);
+        PyObject *pair = PyList_GET_ITEM(iterable, i);
 
         // Get the key and item from the pair tuple
-        PyObject *key = PyTuple_GetItem(pair, 0);
-        PyObject *item = PyTuple_GetItem(pair, 1);
+        PyObject *key = PyTuple_GET_ITEM(pair, 0);
+        PyObject *item = PyTuple_GET_ITEM(pair, 1);
 
-        // Convert the key and value to bytes
-        PyObject *key_bytes = from_any_value(key);
-        PyObject *item_bytes = from_any_value(item);
-
-        // Add the key and value bytes to the byte stack
-        PyBytes_ConcatAndDel(&bytes, key_bytes);
-        PyBytes_ConcatAndDel(&bytes, item_bytes);
+        // Write the key and item
+        int status_key = from_any_value(vd, key);
+        if (status_key != SUCCESS_SC) return status_key;
+        
+        int status_item = from_any_value(vd, item);
+        if (status_item != SUCCESS_SC) return status_item;
     }
 
-    return bytes;
-}
+    // Decrement the nest depth
+    vd->nests--;
 
-// # The main from-value converter for single values
-
-// Replaces NULL values with a default value if applicable, else throws an error
-static inline void ensure_not_null(PyObject **bytes, PyObject **default_bytes)
-{
-    // Return the bytes object normally if it isn't NULL
-    if (*bytes != NULL)
-        return;
-    else
-    {
-        // Else check if a default value is defined
-        if (*default_bytes != NULL)
-        {
-            // Check if the default value hasn't been converted to bytes already
-            if (!PyBytes_Check(*default_bytes))
-            {
-                // Convert the default value to bytes and replace the default_value with it
-                PyObject *converted = from_any_value(*default_bytes);
-                if (converted == NULL)
-                {
-                    // Handle the conversion error if needed
-                    return;
-                }
-                *default_bytes = converted;
-            }
-
-            // Assign the default bytes to the bytes object
-            *bytes = *default_bytes;
-            Py_INCREF(bytes);
-            return;
-        }
-        else
-        {
-            // Throw an error stating the value was not supported
-            PyErr_SetString(PyExc_ValueError, "Received an unsupported datatype.");
-            return;
-        }
-    }
+    return SUCCESS_SC;
 }
 
 // # The main from-value conversion functions
 
-PyObject *from_any_value(PyObject *value)
+int from_any_value(ValueData *vd, PyObject *value)
 {
     // Get the datatype of the value
     const char *datatype = Py_TYPE(value)->tp_name;
@@ -969,77 +881,116 @@ PyObject *from_any_value(PyObject *value)
         // Check the 2nd character
         switch (datatype[1])
         {
-        case 't': return from_string(value);
-        case 'e': return from_set_frozenset(value, 0);
-        default:  return NULL;
+        case 't': return from_string(vd, value);
+        case 'e': return from_set_frozenset(vd, value, 0);
+        default:  return INCORRECT_SC;
         }
     }
-    case 'i': return from_integer(value);
+    case 'i': return from_integer(vd, value);
     case 'f':
     {
         switch (datatype[1])
         {
-        case 'l': return from_float(value);
-        case 'r': return from_set_frozenset(value, 1);
+        case 'l': return from_float(vd, value);
+        case 'r': return from_set_frozenset(vd, value, 1);
         }
     }
-    return from_float(value);
-    case 'c': return from_complex(value);
+    return from_float(vd, value);
+    case 'c': return from_complex(vd, value);
     case 'b': // Boolean | bytes | bytearray (all start with a 'b')
     {
         // Check the 2nd datachar
         switch (datatype[1])
         {
-        case 'o': return from_boolean(value);
+        case 'o': return from_boolean(vd, value);
         default:
         {
             // Check the 5th datachar because the 2nd, 3rd, and 4th are the same
             switch (datatype[4])
             {
-            case 's': return from_bytes(value);
-            case 'a': return from_bytearray(value);
-            default:  return NULL;
+            case 's': return from_bytes(vd, value);
+            case 'a': return from_bytearray(vd, value);
+            default:  return INCORRECT_SC;
             }
         }
         }
     }
-    case 'N': return from_nonetype();
-    case 'e': return from_ellipsis();
+    case 'N': return from_static_value(vd, NONE_S);
+    case 'e': return from_static_value(vd, ELLIPSIS_S);
     case 'd': // DateTime objects | Decimal | Dict
     {
         switch (datatype[1])
         {
-        case 'a': return from_datetime(value, datatype);
-        case 'e': return from_decimal(value);
-        case 'i': return from_dict(value);
-        default:  return NULL;
+        case 'a': return from_datetime(vd, value, datatype);
+        case 'e': return from_decimal(vd, value);
+        case 'i': return from_dict(vd, value);
+        default:  return INCORRECT_SC;
         }
     }
-    case 'U': return from_uuid(value);
-    case 'm': return from_memoryview(value);
-    case 'l': return from_list(value);
-    case 't': return from_tuple(value);
-    default:  return NULL;
+    case 'U': return from_uuid(vd, value);
+    case 'm': return from_memoryview(vd, value);
+    case 'l': return from_list(vd, value);
+    case 't': return from_tuple(vd, value);
+    default:  return INCORRECT_SC;
     }
 }
 
 PyObject *from_value(PyObject *value)
 {
-    PyObject *result = from_any_value(value);
-    if (result == NULL)
-    {
-        PyErr_SetString(PyExc_ValueError, "Received an unsupported datatype.");
+    // Initiate the ValueData
+    int vd_status;
+    ValueData vd = init_vd(value, &vd_status);
+
+    // Return on status error
+    if (vd_status == EXCEPTION_SC)
+        // Exception already set
         return NULL;
+
+    // Write the value and get the status
+    int status = from_any_value(&vd, value);
+
+    // Check the status and throw an appropriate error if not success
+    if (status == SUCCESS_SC)
+    {
+        // Convert it to a Python bytes object
+        PyObject *py_bytes = PyBytes_FromStringAndSize((const char *)(vd.bytes), vd.offset);
+        free(vd.bytes);
+        return py_bytes;
     }
-
-    // Add a protocol byte to the bytes object
-    const char datachars[] = {PROT_1, '\0'};
-    PyObject *metabytes = PyBytes_FromStringAndSize(datachars, 1);
-    PyBytes_ConcatAndDel(&metabytes, result);
-
-    // Incref for the user to hold it and return
-    Py_INCREF(metabytes);
-    return metabytes;
+    else
+    {
+        free(vd.bytes);
+        // Check what error we encountered
+        switch (status)
+        {
+        case INCORRECT_SC:
+        case UNSUPPORTED_SC:
+        {
+            // Incorrect datatype, likely an unsupported one
+            PyErr_SetString(PyExc_ValueError, "Received an unsupported datatype.");
+            return NULL;
+        }
+        case EXCEPTION_SC: return NULL; // Error already set
+        case NESTDEPTH_SC:
+        {
+            // Exceeded the maximum nest depth
+            PyErr_SetString(PyExc_ValueError, "Exceeded the maximum value nest depth.");
+            return NULL;
+        }
+        case NOMEMORY_SC:
+        {
+            // Not enough memory
+            PyErr_SetString(PyExc_MemoryError, "Not enough memory space available for use.");
+            return NULL;
+        }
+        default:
+        {
+            // Something unknown went wrong
+            PyErr_SetString(PyExc_RuntimeError, "Something unexpected went wrong, and we couldn't quite catch what it was.");
+            return NULL;
+        }
+        }
+    }
 }
 
 // # Helper functions for the to-conversion functions
@@ -1131,16 +1082,24 @@ static inline PyObject *to_int_gen(ByteData *bd, size_t length)
 
 static inline PyObject *to_float_s(ByteData *bd)
 {
-    if (ensure_offset(bd, (size_t)sizeof(double) + 1) == -1) return NULL;
+    if (ensure_offset(bd, 1) == -1) return NULL;
 
-    // Set up a double and copy the bytes to it
-    double value;
-    memcpy(&value, &(bd->bytes[++bd->offset]), sizeof(double));
+    // Get the size of the value
+    size_t size = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
+
+    if (ensure_offset(bd, size + 1) == -1) return NULL;
+
+    // Get the string of the float
+    PyObject *float_str = PyUnicode_FromStringAndSize((const char *)&(bd->bytes[++bd->offset]), size);
+    // Convert the string representative to a Python float
+    PyObject *float_obj = PyFloat_FromString(float_str);
+
+    Py_DECREF(float_str);
 
     // Update the offset to start at the next item
-    bd->offset += sizeof(double);
-    // Convert the double to a Python float and return it
-    return PyFloat_FromDouble(value);
+    bd->offset += size;
+
+    return float_obj;
 }
 
 // Generic method to convert bool values
@@ -1542,7 +1501,7 @@ static inline PyObject *to_any_value(ByteData *bd)
     case INT_3:       return to_int_gen(bd, 3);
     case INT_4:       return to_int_gen(bd, 4);
     case INT_5:       return to_int_gen(bd, 5);
-    case FLOAT_S:     return to_float_s(bd);
+    case FLOAT_D:     return to_float_s(bd);
     case BOOL_T:      return to_bool_gen(bd, Py_True);
     case BOOL_F:      return to_bool_gen(bd, Py_False);
     case COMPLEX_S:   return to_complex_s(bd);
@@ -1676,7 +1635,7 @@ PyObject *to_value(PyObject *py_bytes)
     // Decide what to do based on the protocol version
     switch (protocol)
     {
-    case PROT_C: // The current protocol
+    case PROT_STD_S: // The default STD protocol
     {
         // Get the length of this bytes object for memory allocation
         Py_ssize_t bytes_length = PyBytes_Size(py_bytes);
@@ -1685,16 +1644,16 @@ PyObject *to_value(PyObject *py_bytes)
         ByteData *bd = (ByteData *)malloc(sizeof(ByteData));
         if (bd == NULL)
         {
-            PyErr_NoMemory();
+            PyErr_SetString(PyExc_MemoryError, "No available memory space.");
             return NULL;
         }
 
         // Allocate the space for the bytes object
-        bd->bytes = (const unsigned char *)malloc(bytes_length);
+        bd->bytes = (unsigned char *)malloc((size_t)bytes_length);
         if (bd->bytes == NULL)
         {
             free(bd);
-            PyErr_NoMemory();
+            PyErr_SetString(PyExc_MemoryError, "No available memory space.");
             return NULL;
         }
 
@@ -1705,13 +1664,12 @@ PyObject *to_value(PyObject *py_bytes)
 
         // Use and return the to-any-value conversion function
         PyObject *result = to_any_value(bd);
-        free((unsigned char *)(bd->bytes));
+        free((void *)(bd->bytes));
         free(bd);
         
         if (result == NULL)
             return NULL;
 
-        Py_INCREF(result);
         return result;
     }
     /*

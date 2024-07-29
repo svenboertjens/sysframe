@@ -27,7 +27,7 @@ For detailed explanation per module, you can find a module-specific README in th
 
 ### Pybytes
 
-Pybytes is a module that's used for serializing and de-serializing values. It aims to keep the byte size smaller and excels at serializing smaller values as well, making it suitable for system development.
+Pybytes is a module that's used for serializing and de-serializing values. It aims to keep the byte size smaller without sacrificing too much performance, making it suitable for system development.
 
 It supports the following datatypes:
 
@@ -35,7 +35,7 @@ It supports the following datatypes:
 - `int`
 - `float`
 - `bool`
-- `complex` (the number)
+- `complex`
 - `NoneType`
 - `ellipsis`
 - `bytes`
@@ -49,7 +49,7 @@ It supports the following datatypes:
 - `memoryview`
 - `decimal.Decimal`
 
-Besides that, it also supports any of the standard list types, those being `list`, `dict`, `tuple`, `set` and `frozenset`. These are also allowed to be nested to (theoretically) unlimited depth.
+Besides that, it also supports any of the standard list types, those being `list`, `dict`, `tuple`, `set` and `frozenset`. These are also allowed to be nested to a depth of 50.
 
 
 ### Membridge
@@ -65,6 +65,6 @@ This module has not been tested yet, and is still being worked on. Thus, it's al
 
 If you happen to find a problem or have a question, feel free to contact me via:
 
-Discord: `sven_de_pen`
-Email:   `boertjens.sven@gmail.com`
+- Discord: `sven_de_pen`,
+- Email:   `boertjens.sven@gmail.com`
 

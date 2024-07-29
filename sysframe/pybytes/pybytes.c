@@ -83,6 +83,7 @@ PyMODINIT_FUNC PyInit_pybytes(void)
 {
     // Init the Python interpreter
     Py_Initialize();
+
     // Import the datetime module
     PyDateTime_IMPORT;
 
@@ -91,7 +92,6 @@ PyMODINIT_FUNC PyInit_pybytes(void)
     if (datetime_m == NULL)
     {
         // Datetime module was not found
-        Py_XDECREF(datetime_m);
         PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find module 'datetime'.");
         return NULL;
     }
@@ -151,7 +151,6 @@ PyMODINIT_FUNC PyInit_pybytes(void)
     PyObject *decimal_m = PyImport_ImportModule("decimal");
     if (decimal_m == NULL)
     {
-        Py_XDECREF(decimal_m);
         PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find module 'decimal'.");
         return NULL;
     }
@@ -164,7 +163,6 @@ PyMODINIT_FUNC PyInit_pybytes(void)
     // Check whether the attribute isn't NULL
     if (decimal_cl == NULL)
     {
-        Py_XDECREF(decimal_cl);
         PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'Decimal' in module 'decimal'.");
         return NULL;
     }

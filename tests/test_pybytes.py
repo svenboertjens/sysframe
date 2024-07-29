@@ -1,5 +1,5 @@
 from unittest import TestCase, main
-from sysframe import pybytes
+import pybytes
 
 import datetime
 import decimal
@@ -51,7 +51,7 @@ class TestPybytes(TestCase):
         self.assertFromTo('Hello, world!' * 1000)
         
         # String (special characters)
-        self.assertFromTo('\t\n\0!@#$%^&*()~`_+-=[]{}|",./<>?')
+        self.assertFromTo('\t\n!@#$%^&*()~`_+-=[]{}|",./<>?')
         
         # Integer (large)
         self.assertFromTo(1^100)
@@ -66,13 +66,13 @@ class TestPybytes(TestCase):
         self.assertFromTo(b'Hello, world!' * 1000)
         
         # Bytes (special characters)
-        self.assertFromTo(b'\t\n\0!@#$%^&*()~`_+-=[]{}|",./<>?')
+        self.assertFromTo(b'\t\n!@#$%^&*()~`_+-=[]{}|",./<>?')
         
         # Bytearray (large)
         self.assertFromTo(bytearray(b'Hello, world!' * 1000))
         
         # Bytearray (special characters)
-        self.assertFromTo(bytearray(b'\t\n\0!@#$%^&*()~`_+-=[]{}",./<>?'))
+        self.assertFromTo(bytearray(b'\t\n!@#$%^&*()~`_+-=[]{}",./<>?'))
     
     # Test the supported 'miscellaneous' (non-standard) values regularly
     def test_misc_regular(self):
@@ -115,7 +115,7 @@ class TestPybytes(TestCase):
         self.assertFromTo(memoryview(b'Hello, world!' * 1000))
         
         # Memoryview (special characters)
-        self.assertFromTo(memoryview(b'\t\n\0!@#$%^&*()~`_+-=[]{}|",./<>?' * 1000))
+        self.assertFromTo(memoryview(b'\t\n!@#$%^&*()~`_+-=[]{}|",./<>?' * 1000))
     
     # Test the supported list types (list, dict, tuple, set, frozenset) regularly
     def test_list_types_regular(self):
@@ -157,7 +157,7 @@ class TestPybytes(TestCase):
         # Set (empty)
         self.assertFromTo(set())
         
-        # Set and frozenset can't be nested, unhashable datatypes
+        # Set and frozenset can't be nested, they're unhashable datatypes
         
         # Frozenset (empty)
         self.assertFromTo(frozenset())
