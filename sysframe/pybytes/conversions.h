@@ -8,6 +8,9 @@
 #include <datetime.h>
 #include <ctype.h>
 
+// Sys getsizeof class
+extern PyObject *sys_cl;
+
 // Datetime module classes
 extern PyObject *datetime_dt; // datetime
 extern PyObject *datetime_td; // timedelta

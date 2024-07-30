@@ -25,7 +25,7 @@
   The variables are also named after a simple structure, being the datatype in capitals
   followed by the type it stands for, such as 'STR_E' for an empty string, 'INT_1' for 
   an integer with 1 size byte, or 'BYTES_D' for a bytes object with dynamic size bytes.
-  For static values, it's marked with an 'S', so for a float it's 'FLOAT_D'. Other special
+  For static values, it's marked with an 'S', so for a float it's 'FLOAT_S'. Other special
   cases are explained when used.
 
   The global markers are used to mark certain patterns or issues during the
@@ -71,7 +71,7 @@
 #define INT_D2 10 //* very large, and a number that needs 65536 is unreachable in the practical sense.
 
 // Float
-#define FLOAT_D 11
+#define FLOAT_S 11
 
 // Boolean
 #define BOOL_T 12 // Use T for True values
@@ -152,19 +152,24 @@
 #define DECIMAL_2 55
 #define DECIMAL_D 56
 
-// # Status code definitions for from-value conversion (_SC = Status Code)
+// # Return status codes
 
-#define SUCCESS_SC     0 // Successful conversion
-#define INCORRECT_SC   1 // Wrong datatype received
-#define UNSUPPORTED_SC 2 // Unsupported datatype
-#define EXCEPTION_SC   3 // Exceptions that set their own error message
-#define NESTDEPTH_SC   4 // The nesting depth is higher than allowed
-#define NOMEMORY_SC    5 // There was not enough memory available
+typedef enum {
+    SC_SUCCESS     = 0, // Successful operation, no issues
+    SC_INCORRECT   = 1, // Incorrect datatype received
+    SC_UNSUPPORTED = 2, // Unsupported datatype received
+    SC_EXCEPTION   = 3, // Exception where an error is set by the returner
+    SC_NESTDEPTH   = 4, // Nesting depth is deeper than allowed
+    SC_NOMEMORY    = 5  // Not enough memory to do an operation
+} StatusCode;
 
 // # Other definitions
 
 #define ALLOC_SIZE 128 // The size to add when reallocating space for bytes
 #define MAX_NESTS  51  // The maximun amount of nests allowed
+
+// Sys getsizeof class
+PyObject *sys_cl;
 
 // Datetime module classes
 PyObject *datetime_dt; // datetime
@@ -189,7 +194,7 @@ typedef struct {
 } ValueData;
 
 // This function resizes the bytes of the ValueData when necessary
-static inline int auto_resize_vd(ValueData *vd, Py_ssize_t jump)
+static inline StatusCode auto_resize_vd(ValueData *vd, Py_ssize_t jump)
 {
     // Check if we need to reallocate for more space with the given jump
     if (vd->offset + jump > vd->max_size)
@@ -198,69 +203,63 @@ static inline int auto_resize_vd(ValueData *vd, Py_ssize_t jump)
         vd->max_size += jump + ALLOC_SIZE;
         // Reallocate to the new max size
         unsigned char *temp = (unsigned char *)realloc((void *)(vd->bytes), vd->max_size * sizeof(unsigned char));
-        if (temp == NULL) return -1; // Return -1 to indicate failure
+        if (temp == NULL) return SC_NOMEMORY; // Return no memory issue
 
         // Update the bytes to point to the new allocated bytes
         vd->bytes = temp;
     }
 
-    // Return 1 to indicate success
-    return 1;
+    // Return success
+    return SC_SUCCESS;
 }
 
 // This function updates the nest depth and whether we've reached the max nests
-static inline int increment_nests(ValueData *vd)
+static inline StatusCode increment_nests(ValueData *vd)
 {
     // Increment the nest depth
     vd->nests++;
     // Check whether we reached the max nest depth
     if (vd->nests == MAX_NESTS)
-        // Return -1 to indicate we have to quit
-        return -1;
+        // Return nesting issue status
+        return SC_NESTDEPTH;
     
-    // Return 1 to indicate success
-    return 1;
+    // Return success
+    return SC_SUCCESS;
 }
 
-// This function simplifies writing to the ValueData bytes
-static inline int write_vd(ValueData *vd, const unsigned char *bytes, Py_ssize_t size)
+// Write a single char to the ValueData
+static inline StatusCode write_char(ValueData *vd, const unsigned char character)
 {
-    // Resize if necessary
-    if (auto_resize_vd(vd, size) == -1) return NOMEMORY_SC;
-
-    // Copy the bytes to add to the bytes stack
-    memcpy(&(vd->bytes[vd->offset]), bytes, (size_t)size);
-
-    // Update the offset
-    vd->offset += size;
-
-    return SUCCESS_SC;
+    // Write the char to the bytes stack
+    vd->bytes[vd->offset++] = character;
+    return SC_SUCCESS;
 }
 
 // Function to initiate the ValueData class
-static inline ValueData init_vd(PyObject *value, int *status)
+static inline ValueData init_vd(PyObject *value, StatusCode *status)
 {
-    // Attempt to estimate what the max possible byte size will be
-    PyObject *value_as_str = PyObject_Repr(value);
-    Py_ssize_t max_size = Py_SIZE(value_as_str);
+    // Attempt to estimate what the max possible byte size will be using sys.getsizeof
+    PyObject *max_size_num = PyObject_CallFunctionObjArgs(sys_cl, value);
+    Py_ssize_t max_size = PyLong_AsSsize_t(max_size_num) + ALLOC_SIZE; // Add the alloc size as headroom
 
-    Py_DECREF(value_as_str);
+    Py_DECREF(max_size_num);
 
     // Create the struct itself
-    ValueData vd = {0, max_size, 0, (unsigned char *)malloc(max_size * sizeof(unsigned char))};
+    ValueData vd = {1, max_size, 0, (unsigned char *)malloc(max_size * sizeof(unsigned char))};
     if (vd.bytes == NULL)
     {
         PyErr_SetString(PyExc_MemoryError, "No available memory space.");
         // Set the status
-        *status = EXCEPTION_SC;
+        *status = SC_EXCEPTION;
         return vd;
     }
 
     // Write the protocol byte
     const unsigned char protocol = PROT_STD_S;
-    write_vd(&vd, &protocol, 1); // No need to check for status because reallocation won't happen here
+    vd.bytes[0] = protocol;
 
-    *status = SUCCESS_SC;
+
+    *status = SC_SUCCESS;
 
     return vd;
 }
@@ -279,12 +278,31 @@ static inline Py_ssize_t get_num_bytes(Py_ssize_t value)
     return num_bytes;
 }
 
-// Function to write size bytes to the bytes
-static inline int write_size_bytes(ValueData *vd, Py_ssize_t value, Py_ssize_t num_bytes) {
-    // Resize if necessary
-    if (auto_resize_vd(vd, num_bytes) == -1) return NOMEMORY_SC;
+// Function to write the datachar and the size as bytes
+static inline StatusCode write_metadata(ValueData *vd, const unsigned char datachar, Py_ssize_t value, Py_ssize_t num_bytes) {
+    // Write the datachar
+    vd->bytes[vd->offset++] = datachar;
 
-    // Store the bytes
+    // Write the size as bytes directly
+    for (Py_ssize_t i = 0; i < num_bytes; i++) {
+        vd->bytes[vd->offset++] = (unsigned char)(value & 0xFF);
+        value >>= 8;
+    }
+
+    return SC_SUCCESS;
+}
+
+// Alike the regular write-metadata function, but also writes the dynamic datachar
+static inline StatusCode write_dynamic_metadata(ValueData *vd, const unsigned char datachar, Py_ssize_t value, Py_ssize_t num_bytes) {
+    // Resize if necessary
+    if (auto_resize_vd(vd, num_bytes + 2) == SC_NOMEMORY) return SC_NOMEMORY;
+
+    // Write the datachar
+    vd->bytes[vd->offset++] = datachar;
+    // Write the dynamic size byte
+    vd->bytes[vd->offset++] = (const unsigned char)num_bytes;
+
+    // Write the size as bytes directly
     for (Py_ssize_t i = 0; i < num_bytes; i++) {
         vd->bytes[vd->offset + i] = (unsigned char)(value & 0xFF);
         value >>= 8;
@@ -293,60 +311,57 @@ static inline int write_size_bytes(ValueData *vd, Py_ssize_t value, Py_ssize_t n
     // Update the offset
     vd->offset += num_bytes;
 
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
-// Function to write the metadata with an E-1-2-D setup
-static inline int write_E12D_metadata(ValueData *vd, Py_ssize_t size, char empty, char one, char two, char dynamic)
+// Function to write the full data with an E-1-2-D setup
+static inline StatusCode write_E12D(ValueData *vd, Py_ssize_t size, const unsigned char *bytes, const unsigned char empty)
 {
     Py_ssize_t num_bytes = get_num_bytes(size);
 
-    // This will hold the datachar
-    unsigned char datachar;
-    int is_dynamic = 0;
+    // Check if we can use regular datachars or have to use the dynamic datachar
     switch (num_bytes)
     {
     case 0:
     {
-        // Add the datachar for the size
-        datachar = empty;
-        break;
+        // Resize for a single byte
+        if (auto_resize_vd(vd, 1) == SC_NOMEMORY) return SC_NOMEMORY;
+        // Write the empty datachar
+        vd->bytes[vd->offset++] = empty;
+
+        // Return success directly to not add the value bytes, as those are empty
+        return SC_SUCCESS;
     }
     case 1:
-    {
-        datachar = one;
-        break;
-    }
     case 2:
     {
-        datachar = two;
+        // Resize if necessary
+        if (auto_resize_vd(vd, num_bytes + size + 1) == SC_NOMEMORY) return SC_NOMEMORY;
+
+        // Write the metadata and set the datachar to the empty one plus the offset, to get the 1 or 2 case datachar
+        if (write_metadata(vd, empty + num_bytes, size, num_bytes) == SC_NOMEMORY) return SC_NOMEMORY;
         break;
     }
     default:
     {
-        datachar = dynamic;
-        is_dynamic = 1;
+        // Resize if necessary
+        if (auto_resize_vd(vd, num_bytes + size + 1) == SC_NOMEMORY) return SC_NOMEMORY;
+        // Write the dynamic metadata
+        if (write_dynamic_metadata(vd, empty + 3, size, num_bytes) == SC_NOMEMORY) return SC_NOMEMORY;
         break;
     }
     }
 
-    // Add the datachar to the bytes
-    if (write_vd(vd, (const unsigned char *)&datachar, 1) == -1) return NOMEMORY_SC;
-
-    // Only write if there are bytes to be written
-    if (num_bytes != 0)
+    // Check if we should add the bytes
+    if (bytes != NULL)
     {
-        if (is_dynamic == 1)
-        {
-            // Write the dynamic size byte
-            if (write_size_bytes(vd, num_bytes, 1) == -1) return NOMEMORY_SC;
-        }
-
-        // Write the size bytes
-        if (write_size_bytes(vd, size, num_bytes) == -1) return NOMEMORY_SC;
+        // Copy the bytes of the value to the bytes stack
+        memcpy(&(vd->bytes[vd->offset]), bytes, size);
+        vd->offset += size;
     }
+    
 
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
 static inline size_t bytes_to_size_t(const unsigned char *bytes, size_t length)
@@ -364,166 +379,124 @@ static inline size_t bytes_to_size_t(const unsigned char *bytes, size_t length)
 
 // # The from-conversion functions
 
-static inline int from_string(ValueData *vd, PyObject *value) // VD is short for ValueData
+static inline StatusCode from_string(ValueData *vd, PyObject *value) // VD is short for ValueData
 {
-    if (!PyUnicode_Check(value)) return INCORRECT_SC;
+    if (!PyUnicode_Check(value)) return SC_INCORRECT;
     
     // Get the string as C bytes and get its size
     Py_ssize_t size;
     const char *bytes = PyUnicode_AsUTF8AndSize(value, &size);
 
-    // Write the metadata
-    if (write_E12D_metadata(vd, size, STR_E, STR_1, STR_2, STR_D) == -1) return NOMEMORY_SC;
-    // Write the value itself
-    if (write_vd(vd, (const unsigned char *)bytes, size) == -1) return NOMEMORY_SC;
+    // Write the data
+    if (write_E12D(vd, size, (const unsigned char *)bytes, STR_E) == SC_NOMEMORY) return SC_NOMEMORY;
 
     // Return success
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
-static inline int from_integer(ValueData *vd, PyObject *value)
+static inline StatusCode from_integer(ValueData *vd, PyObject *value)
 {
-    if (!PyLong_Check(value)) return INCORRECT_SC;
+    if (!PyLong_Check(value)) return SC_INCORRECT;
 
     // Calculate number of bytes needed, including the sign bit
     size_t num_bytes = (Py_SIZE(value) > 0) ? ((_PyLong_NumBits(value) + 8) / 8) : 1;
 
-    unsigned char *bytes = (unsigned char *)malloc(num_bytes * sizeof(unsigned char));
-    if (!bytes)
-    {
-        free(bytes);
-        PyErr_SetString(PyExc_MemoryError, "No available memory space.");
-        return EXCEPTION_SC;
-    }
-
-    if (_PyLong_AsByteArray((PyLongObject *)value, bytes, num_bytes, 1, 1) == -1) {
-        free(bytes);
-        return INCORRECT_SC;
-    }
-
-    // This will hold the datachar byte
+    // Determine datachar and dynamic length
     unsigned char datachar;
     int is_dynamic = 0;
-    switch (num_bytes)
+
+    if (num_bytes <= 5)
     {
-    case 1:
-    {
-        datachar = INT_1;
-        break;
+        datachar = INT_1 + (num_bytes - 1);
     }
-    case 2:
+    else
     {
-        datachar = INT_2;
-        break;
-    }
-    case 3:
-    {
-        datachar = INT_3;
-        break;
-    }
-    case 4:
-    {
-        datachar = INT_4;
-        break;
-    }
-    case 5:
-    {
-        datachar = INT_5;
-        break;
-    }
-    default:
-    {
-        // Use dynamic 1 if number of bytes is smaller than 256, else dynamic 2
         datachar = num_bytes < 256 ? INT_D1 : INT_D2;
         is_dynamic = num_bytes < 256 ? 1 : 2;
-        break;
-    }
     }
     
-    // Write the datachar
-    if (write_vd(vd, (const unsigned char *)&datachar, 1) == -1) return NOMEMORY_SC;
+    // Resize if necessary
+    if (auto_resize_vd(vd, 1 + is_dynamic + num_bytes) == SC_NOMEMORY) return SC_NOMEMORY;
 
-    // Write the dynamic size bytes if necessary
-    if (is_dynamic > 0)
+    // Write the datachar
+    vd->bytes[vd->offset++] = datachar;
+
+    // Write dynamic size bytes if necessary
+    if (is_dynamic == 1)
     {
-        // Use the is_dynamic as that's set to the dynamic length to use
-        if (write_size_bytes(vd, num_bytes, is_dynamic) == -1) return NOMEMORY_SC;
+        vd->bytes[vd->offset++] = (const unsigned char)num_bytes;
+    }
+    else if (is_dynamic == 2)
+    {
+        vd->bytes[vd->offset++] = (const unsigned char)(num_bytes & 0xFF);
+        num_bytes >>= 8;
+        vd->bytes[vd->offset++] = (const unsigned char)(num_bytes & 0xFF);
     }
 
-    // Write the value
-    if (write_vd(vd, (const unsigned char *)bytes, num_bytes) == -1) return NOMEMORY_SC;
-    free(bytes);
+    // Write the bytes directly to the bytes stack instead of allocating a bytes object and using write_vd
+    if (_PyLong_AsByteArray((PyLongObject *)value, &(vd->bytes[vd->offset]), num_bytes, 1, 1) == -1) return SC_INCORRECT;
 
-    return SUCCESS_SC;
+    // Update the offset
+    vd->offset += num_bytes;
+
+    return SC_SUCCESS;
 }
 
-static inline int from_float(ValueData *vd, PyObject *value)
+static inline StatusCode from_float(ValueData *vd, PyObject *value)
 {
-    if (!PyFloat_Check(value)) return INCORRECT_SC;
+    if (!PyFloat_Check(value)) return SC_INCORRECT;
 
-    // Get the float object as a string
-    PyObject *str = PyObject_Str(value);
-    // And convert it to a char array
-    Py_ssize_t size;
-    const unsigned char *bytes = (const unsigned char *)PyUnicode_AsUTF8AndSize(str, &size);
+    // Resize if necessary
+    if (auto_resize_vd(vd, 1 + sizeof(double)) == SC_NOMEMORY) return SC_NOMEMORY;
 
-    // Write the datachar and size byte
-    const unsigned char metabytes[] = {FLOAT_D, (const unsigned char)size};
-    if (write_vd(vd, metabytes, 2) == -1) return NOMEMORY_SC;
+    // Assign the datachar
+    vd->bytes[vd->offset++] = FLOAT_S;
 
-    // Write the double converted to a string
-    if (write_vd(vd, bytes, size) == -1) return NOMEMORY_SC;
+    // Write the float converted to a double to the bytes
+    double c_num = PyFloat_AsDouble(value);
+    memcpy(&(vd->bytes[vd->offset]), &c_num, sizeof(double));
+    vd->offset += sizeof(double); // Update the offset
 
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
-static inline int from_complex(ValueData *vd, PyObject *value)
+static inline StatusCode from_complex(ValueData *vd, PyObject *value)
 {
-    if (!PyComplex_Check(value)) return INCORRECT_SC;
+    if (!PyComplex_Check(value)) return SC_INCORRECT;
+
+    // Resize if necessary
+    if (auto_resize_vd(vd, 1 + (2 * sizeof(double))) == SC_NOMEMORY) return SC_NOMEMORY;
 
     // Get the complex as a value
     Py_complex ccomplex = PyComplex_AsCComplex(value);
 
-    // Allocate space for two doubles, as a complex type is basically two doubles
-    unsigned char *bytes = (unsigned char *)malloc(2 * sizeof(double));
-
-    // Copy the real and imaginary parts to the bytes object
-    memcpy(bytes, &ccomplex.real, sizeof(double));
-    memcpy(bytes + sizeof(double), &ccomplex.imag, sizeof(double));
-
     // Write the datachar
-    const unsigned char datachar = COMPLEX_S;
-    if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
+    vd->bytes[vd->offset++] = COMPLEX_S;
 
-    // Write the double bytes
-    if (write_vd(vd, (const unsigned char *)bytes, 2 * sizeof(double)) == -1) return NOMEMORY_SC;
-    free(bytes);
+    // Copy the real and imaginary parts to the bytes stack
+    memcpy(&(vd->bytes[vd->offset]), &ccomplex.real, sizeof(double));
+    memcpy(&(vd->bytes[vd->offset + sizeof(double)]), &ccomplex.imag, sizeof(double));
+    vd->offset += 2 * sizeof(double);
 
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
-static inline int from_boolean(ValueData *vd, PyObject *value)
+static inline StatusCode from_boolean(ValueData *vd, PyObject *value)
 {
-    if (!PyBool_Check(value)) return INCORRECT_SC;
+    if (!PyBool_Check(value)) return SC_INCORRECT;
 
-    // Write a true datachar if the value is true, else a false datachar
-    if (PyObject_IsTrue(value))
-    {
-        const unsigned char datachar = BOOL_T;
-        if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
-    }
-    else
-    {
-        const unsigned char datachar = BOOL_F;
-        if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
-    }
+    // Resize if necessary
+    if (auto_resize_vd(vd, 1) == SC_NOMEMORY) return SC_NOMEMORY;
 
-    return SUCCESS_SC;
+    // Write the datachar based on whether the boolean is true
+    vd->bytes[vd->offset++] = Py_IsTrue(value) ? BOOL_T : BOOL_F;
+
+    return SC_SUCCESS;
 }
 
-static inline int from_bytes(ValueData *vd, PyObject *value)
+static inline StatusCode from_bytes(ValueData *vd, PyObject *value)
 {
-    if (!PyBytes_Check(value)) return INCORRECT_SC;
+    if (!PyBytes_Check(value)) return SC_INCORRECT;
 
     // Get the string as C bytes and get its size
     Py_ssize_t size;
@@ -533,179 +506,178 @@ static inline int from_bytes(ValueData *vd, PyObject *value)
     {
         // Could not get the bytes' string and value
         PyErr_SetString(PyExc_RuntimeError, "Failed to get the C string representative of a bytes object.");
-        return EXCEPTION_SC;
+        return SC_EXCEPTION;
     }
 
-    // Write the metadata
-    if (write_E12D_metadata(vd, size, BYTES_E, BYTES_1, BYTES_2, BYTES_D) == -1) return NOMEMORY_SC;
-    // Write the value itself
-    if (write_vd(vd, (const unsigned char *)bytes, size) == -1) return NOMEMORY_SC;
+    // Write the data
+    if (write_E12D(vd, size, (const unsigned char *)bytes, BYTES_E) == SC_NOMEMORY) return SC_NOMEMORY;
 
     // Return success
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
-static inline int from_bytearray(ValueData *vd, PyObject *value)
+static inline StatusCode from_bytearray(ValueData *vd, PyObject *value)
 {
-    if (!PyByteArray_Check(value)) return INCORRECT_SC;
+    if (!PyByteArray_Check(value)) return SC_INCORRECT;
 
     // Get the string as C bytes
     const char *bytes = (const char *)PyByteArray_AsString(value);
-    // Get the size of the bytes object
-    Py_ssize_t size = (Py_ssize_t)strlen(bytes);
+    // Get the size of the bytearray object
+    Py_ssize_t size = Py_SIZE(value);
 
-    // Write the metadata
-    if (write_E12D_metadata(vd, size, BYTEARR_E, BYTEARR_1, BYTEARR_2, BYTEARR_D) == -1) return NOMEMORY_SC;
-    // Write the value itself
-    if (write_vd(vd, (const unsigned char *)bytes, size) == -1) return NOMEMORY_SC;
+    // Write the data
+    if (write_E12D(vd, size, (const unsigned char *)bytes, BYTEARR_E) == SC_NOMEMORY) return SC_NOMEMORY;
 
     // Return success
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
 // Function for static values, like NoneType and Ellipsis
-static inline int from_static_value(ValueData *vd, const unsigned char datachar)
+static inline StatusCode from_static_value(ValueData *vd, const unsigned char datachar)
 {
-    if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
-    return SUCCESS_SC;
+    // Resize if necessary
+    if (auto_resize_vd(vd, 1) == SC_NOMEMORY) return SC_NOMEMORY;
+
+    // Write the received datachar
+    vd->bytes[vd->offset++] = datachar;
+
+    return SC_SUCCESS;
 }
 
-static inline int from_datetime(ValueData *vd, PyObject *value, const char *datatype) // Datetype required for the type of datetime object
+static inline StatusCode from_datetime(ValueData *vd, PyObject *value, const char *datatype) // Datetype required for the type of datetime object
 {
-    // This will hold the datachar
-    unsigned char datachar;
-
     // Create an iso format string of the datetime object
     PyObject *iso = PyObject_CallMethod(value, "isoformat", NULL);
-    if (iso == NULL) return INCORRECT_SC;
+    if (iso == NULL) return SC_INCORRECT;
     
     // Convert the iso string to bytes
     Py_ssize_t size;
-    const unsigned char *bytes = (const unsigned char *)PyUnicode_AsUTF8AndSize(iso, &size);
+    const char *bytes = PyUnicode_AsUTF8AndSize(iso, &size);
+
+    // Resize if necessary
+    if (auto_resize_vd(vd, 2 + size) == SC_NOMEMORY) return SC_NOMEMORY;
 
     Py_DECREF(iso);
 
     // Decide the datachar of the datetime object type, and do type checks
     if (strcmp("datetime.datetime", datatype) == 0)
     {
-        if (!PyObject_IsInstance(value, datetime_dt)) return INCORRECT_SC;
-        datachar = DATETIME_DT;
+        if (!PyObject_IsInstance(value, datetime_dt)) return SC_INCORRECT;
+        vd->bytes[vd->offset++] = DATETIME_DT;
     }
     else if (strcmp("datetime.date", datatype) == 0)
     {
-        if (!PyObject_IsInstance(value, datetime_d)) return INCORRECT_SC;
-        datachar = DATETIME_D;
+        if (!PyObject_IsInstance(value, datetime_d)) return SC_INCORRECT;
+        vd->bytes[vd->offset++] = DATETIME_D;
     }
     else if (strcmp("datetime.timedelta", datatype) == 0)
     {
         // TimeDelta objects aren't supported yet, mention explicitly
-        PyErr_SetString(PyExc_ValueError, "DateTime.TimeDelta objects are not supported yet, though they will be later.");
-        return EXCEPTION_SC;
+        PyErr_SetString(PyExc_ValueError, "Sorry, 'datetime.timedelta' objects are not supported yet, though they will be later.");
+        return SC_EXCEPTION;
     }
     else if (strcmp("datetime.time", datatype) == 0)
     {
-        if (!PyObject_IsInstance(value, datetime_t)) return INCORRECT_SC;
-        datachar = DATETIME_T;
+        if (!PyObject_IsInstance(value, datetime_t)) return SC_INCORRECT;
+        vd->bytes[vd->offset++] = DATETIME_T;
     }
     else
-        return INCORRECT_SC;
-
-    // Write the datachar
-    if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
-    // Write the size
-    if (write_size_bytes(vd, size, get_num_bytes(size)) == -1) return NOMEMORY_SC;
+        return SC_INCORRECT;
+    
+    // Write the size byte
+    vd->bytes[vd->offset++] = (const unsigned char)size;
     // Write the bytes
-    if (write_vd(vd, bytes, size) == -1) return NOMEMORY_SC;
+    memcpy(&(vd->bytes[vd->offset]), (const unsigned char *)bytes, size);
+    vd->offset += size;
 
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
-static inline int from_decimal(ValueData *vd, PyObject *value)
+static inline StatusCode from_decimal(ValueData *vd, PyObject *value)
 {
-    if (!PyObject_IsInstance(value, decimal_cl)) return INCORRECT_SC;
+    if (!PyObject_IsInstance(value, decimal_cl)) return SC_INCORRECT;
 
     // Get the string representation of the Decimal object
     PyObject* str = PyObject_Str(value);
     if (str == NULL)
-        return INCORRECT_SC;
+        return SC_INCORRECT;
 
     // Get the string as C bytes and get its size
     Py_ssize_t size;
     const char *bytes = PyUnicode_AsUTF8AndSize(str, &size);
 
-    // Write the metadata. Pass the empty arg as 0 as that's impossible with decimal values
-    if (write_E12D_metadata(vd, size, 0, DECIMAL_1, DECIMAL_2, DECIMAL_D) == -1) return NOMEMORY_SC;
-    // Write the value itself
-    if (write_vd(vd, (const unsigned char *)bytes, size) == -1) return NOMEMORY_SC;
+    // Write the data, and pass the DECIMAL_1 datachar - 1 as there's not a DECIMAL_E datachar
+    if (write_E12D(vd, size, (const unsigned char *)bytes, DECIMAL_1 - 1) == SC_NOMEMORY) return SC_NOMEMORY;
 
     // Return success
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
-static inline int from_uuid(ValueData *vd, PyObject *value)
+static inline StatusCode from_uuid(ValueData *vd, PyObject *value)
 {
-    if (!PyObject_IsInstance(value, uuid_cl)) return INCORRECT_SC;
+    if (!PyObject_IsInstance(value, uuid_cl)) return SC_INCORRECT;
+
+    // Resize if necessary
+    if (auto_resize_vd(vd, 33) == SC_NOMEMORY) return SC_NOMEMORY;
     
     // Get the hexadecimal representation of the UUID
     PyObject* hex_str = PyObject_GetAttrString(value, "hex");
     if (hex_str == NULL)
     {
         PyErr_SetString(PyExc_RuntimeError, "Could not get the hex representation of a UUID.");
-        return EXCEPTION_SC;
+        return SC_EXCEPTION;
     }
 
     // Get the string as C bytes
     const char *bytes = PyUnicode_AsUTF8(hex_str);
 
     // Write the datachar
-    const unsigned char datachar = UUID_S;
-    if (write_vd(vd, &datachar, 1) == -1) return NOMEMORY_SC;
+    vd->bytes[vd->offset++] = UUID_S;
     // Write the value itself
-    if (write_vd(vd, (const unsigned char *)bytes, 32) == -1) return NOMEMORY_SC; // Static size of 32
+    memcpy(&(vd->bytes[vd->offset]), (const unsigned char *)bytes, 32); // Static size of 32
+    vd->offset += 32;
 
     // Return success
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
-static inline int from_memoryview(ValueData *vd, PyObject *value)
+static inline StatusCode from_memoryview(ValueData *vd, PyObject *value)
 {
-    if (!PyMemoryView_Check(value)) return INCORRECT_SC;
+    if (!PyMemoryView_Check(value)) return SC_INCORRECT;
 
     // Get the underlying buffer from the memoryview
     Py_buffer view;
     if (PyObject_GetBuffer(value, &view, PyBUF_READ) == -1)
     {
         PyErr_SetString(PyExc_RuntimeError, "Could not get the buffer of a memoryview object.");
-        return EXCEPTION_SC;
+        return SC_EXCEPTION;
     }
 
-    // Write the datachar and size bytes
-    if (write_E12D_metadata(vd, view.len, MEMVIEW_E, MEMVIEW_1, MEMVIEW_2, MEMVIEW_D) == -1) return NOMEMORY_SC;
-    // Write the buffer
-    if (write_vd(vd, (const unsigned char *)view.buf, view.len) == -1) return NOMEMORY_SC;
+    // Write the data
+    if (write_E12D(vd, view.len, (const unsigned char *)view.buf, MEMVIEW_E) == SC_NOMEMORY) return SC_NOMEMORY;
 
     PyBuffer_Release(&view);
 
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
 // # Functions for converting list type values to bytes and their helper functions
 
 // Pre-definition for the items in the iterables
-int from_any_value(ValueData *vd, PyObject *value);
+static inline StatusCode from_any_value(ValueData *vd, PyObject *value);
 
-static inline int from_list(ValueData *vd, PyObject *value)
+static inline StatusCode from_list(ValueData *vd, PyObject *value)
 {
-    if (!PyList_Check(value)) return INCORRECT_SC;
+    if (!PyList_Check(value)) return SC_INCORRECT;
     
     // Increment the nest depth and return if it's too deep
-    if (increment_nests(vd) == -1) return NESTDEPTH_SC;
+    if (increment_nests(vd) == SC_NESTDEPTH) return SC_NESTDEPTH;
 
     // The number of items in the list
     Py_ssize_t num_items = PyList_Size(value);
 
-    // Write the metadata
-    if (write_E12D_metadata(vd, num_items, LIST_E, LIST_1, LIST_2, LIST_D) == -1) return NOMEMORY_SC;
+    // Write the metadata, and pass NULL as the bytes to not write that
+    if (write_E12D(vd, num_items, NULL, LIST_E) == SC_NOMEMORY) return SC_NOMEMORY;
 
     // Go over all items in the list
     for (Py_ssize_t i = 0; i < num_items; i++)
@@ -716,27 +688,27 @@ static inline int from_list(ValueData *vd, PyObject *value)
         int status = from_any_value(vd, item);
 
         // Return the status code if it's not success
-        if (status != SUCCESS_SC) return status;
+        if (status != SC_SUCCESS) return status;
     }
 
     // Decrement the nest depth
     vd->nests--;
 
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
-static inline int from_tuple(ValueData *vd, PyObject *value)
+static inline StatusCode from_tuple(ValueData *vd, PyObject *value)
 {
-    if (!PyTuple_Check(value)) return INCORRECT_SC;
+    if (!PyTuple_Check(value)) return SC_INCORRECT;
     
     // Increment the nest depth and return if it's too deep
-    if (increment_nests(vd) == -1) return NESTDEPTH_SC;
+    if (increment_nests(vd) == SC_NESTDEPTH) return SC_NESTDEPTH;
 
     // The number of items in the tuple
     Py_ssize_t num_items = PyTuple_Size(value);
 
     // Write the metadata
-    if (write_E12D_metadata(vd, num_items, TUPLE_E, TUPLE_1, TUPLE_2, TUPLE_D) == -1) return NOMEMORY_SC;
+    if (write_E12D(vd, num_items, NULL, TUPLE_E) == SC_NOMEMORY) return SC_NOMEMORY;
 
     // Go over all items in the tuple
     for (Py_ssize_t i = 0; i < num_items; i++)
@@ -747,29 +719,29 @@ static inline int from_tuple(ValueData *vd, PyObject *value)
         int status = from_any_value(vd, item);
 
         // Return the status code if it's not success
-        if (status != SUCCESS_SC) return status;
+        if (status != SC_SUCCESS) return status;
     }
 
     // Decrement the nest depth
     vd->nests--;
 
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
 // Function fro both sets and frozensets
-static inline int from_set_frozenset(ValueData *vd, PyObject *value, int is_frozenset)
+static inline StatusCode from_set_frozenset(ValueData *vd, PyObject *value, int is_frozenset)
 {
-    if (!PySet_Check(value) && !PyFrozenSet_Check(value)) return INCORRECT_SC;
+    if (!PySet_Check(value) && !PyFrozenSet_Check(value)) return SC_INCORRECT;
     
     // Increment the nest depth and return if it's too deep
-    if (increment_nests(vd) == -1) return NESTDEPTH_SC;
+    if (increment_nests(vd) == SC_NESTDEPTH) return SC_NESTDEPTH;
     
     // Create an iterator from the set so that we can count the items
     PyObject *count_iter = PyObject_GetIter(value);
     if (count_iter == NULL)
     {
         PyErr_SetString(PyExc_RuntimeError, "Could not get an iterator of a set type.");
-        return EXCEPTION_SC;
+        return SC_EXCEPTION;
     }
     
     // This will hold the number of items in the iterator
@@ -784,11 +756,11 @@ static inline int from_set_frozenset(ValueData *vd, PyObject *value, int is_froz
     // Write the metadata
     if (is_frozenset == 1)
     {
-        if (write_E12D_metadata(vd, num_items, FSET_E, FSET_1, FSET_2, FSET_D) == -1) return NOMEMORY_SC;
+        if (write_E12D(vd, num_items, NULL, FSET_E) == SC_NOMEMORY) return SC_NOMEMORY;
     }
     else
     {
-        if (write_E12D_metadata(vd, num_items, SET_E, SET_1, SET_2, SET_D) == -1) return NOMEMORY_SC;
+        if (write_E12D(vd, num_items, NULL, SET_E) == SC_NOMEMORY) return SC_NOMEMORY;
     }
 
     // Get another iterator of the set to write the items
@@ -796,7 +768,7 @@ static inline int from_set_frozenset(ValueData *vd, PyObject *value, int is_froz
     if (iter == NULL)
     {
         PyErr_SetString(PyExc_RuntimeError, "Could not get an iterator of a set type.");
-        return EXCEPTION_SC;
+        return SC_EXCEPTION;
     }
 
     // Go over the iterator and write the items
@@ -810,16 +782,16 @@ static inline int from_set_frozenset(ValueData *vd, PyObject *value, int is_froz
         Py_DECREF(item);
 
         // Return the status code if it's not success
-        if (status != SUCCESS_SC) return status;
+        if (status != SC_SUCCESS) return status;
     }
 
     // Decrement the nest depth
     vd->nests--;
 
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
-static inline int from_dict(ValueData *vd, PyObject *value)
+static inline StatusCode from_dict(ValueData *vd, PyObject *value)
 {
     /*
       A dict type is treated kind of as a list, but the difference
@@ -827,16 +799,16 @@ static inline int from_dict(ValueData *vd, PyObject *value)
       dict in the order of 'key1, value1, key2, value2, etc..'.
 
     */
-    if (!PyDict_Check(value)) return INCORRECT_SC;
+    if (!PyDict_Check(value)) return SC_INCORRECT;
     
     // Increment the nest depth and return if it's too deep
-    if (increment_nests(vd) == -1) return NESTDEPTH_SC;
+    if (increment_nests(vd) == SC_NESTDEPTH) return SC_NESTDEPTH;
 
     // Get the amount of item pairs in the dict
     Py_ssize_t num_pairs = PyDict_Size(value);
 
     // Write the metadata
-    if (write_E12D_metadata(vd, num_pairs, DICT_E, DICT_1, DICT_2, DICT_D) == -1) return NOMEMORY_SC;
+    if (write_E12D(vd, num_pairs, NULL, DICT_E) == SC_NOMEMORY) return SC_NOMEMORY;
 
     // Get the items of the dict in a list
     PyObject *iterable = PyDict_Items(value);
@@ -853,21 +825,21 @@ static inline int from_dict(ValueData *vd, PyObject *value)
 
         // Write the key and item
         int status_key = from_any_value(vd, key);
-        if (status_key != SUCCESS_SC) return status_key;
+        if (status_key != SC_SUCCESS) return status_key;
         
         int status_item = from_any_value(vd, item);
-        if (status_item != SUCCESS_SC) return status_item;
+        if (status_item != SC_SUCCESS) return status_item;
     }
 
     // Decrement the nest depth
     vd->nests--;
 
-    return SUCCESS_SC;
+    return SC_SUCCESS;
 }
 
 // # The main from-value conversion functions
 
-int from_any_value(ValueData *vd, PyObject *value)
+static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
 {
     // Get the datatype of the value
     const char *datatype = Py_TYPE(value)->tp_name;
@@ -883,7 +855,7 @@ int from_any_value(ValueData *vd, PyObject *value)
         {
         case 't': return from_string(vd, value);
         case 'e': return from_set_frozenset(vd, value, 0);
-        default:  return INCORRECT_SC;
+        default:  return SC_INCORRECT;
         }
     }
     case 'i': return from_integer(vd, value);
@@ -910,7 +882,7 @@ int from_any_value(ValueData *vd, PyObject *value)
             {
             case 's': return from_bytes(vd, value);
             case 'a': return from_bytearray(vd, value);
-            default:  return INCORRECT_SC;
+            default:  return SC_INCORRECT;
             }
         }
         }
@@ -924,33 +896,33 @@ int from_any_value(ValueData *vd, PyObject *value)
         case 'a': return from_datetime(vd, value, datatype);
         case 'e': return from_decimal(vd, value);
         case 'i': return from_dict(vd, value);
-        default:  return INCORRECT_SC;
+        default:  return SC_INCORRECT;
         }
     }
     case 'U': return from_uuid(vd, value);
     case 'm': return from_memoryview(vd, value);
     case 'l': return from_list(vd, value);
     case 't': return from_tuple(vd, value);
-    default:  return INCORRECT_SC;
+    default:  return SC_INCORRECT;
     }
 }
 
 PyObject *from_value(PyObject *value)
 {
     // Initiate the ValueData
-    int vd_status;
+    StatusCode vd_status;
     ValueData vd = init_vd(value, &vd_status);
 
     // Return on status error
-    if (vd_status == EXCEPTION_SC)
+    if (vd_status == SC_EXCEPTION)
         // Exception already set
         return NULL;
 
     // Write the value and get the status
-    int status = from_any_value(&vd, value);
+    StatusCode status = from_any_value(&vd, value);
 
     // Check the status and throw an appropriate error if not success
-    if (status == SUCCESS_SC)
+    if (status == SC_SUCCESS)
     {
         // Convert it to a Python bytes object
         PyObject *py_bytes = PyBytes_FromStringAndSize((const char *)(vd.bytes), vd.offset);
@@ -963,21 +935,21 @@ PyObject *from_value(PyObject *value)
         // Check what error we encountered
         switch (status)
         {
-        case INCORRECT_SC:
-        case UNSUPPORTED_SC:
+        case SC_INCORRECT:
+        case SC_UNSUPPORTED:
         {
             // Incorrect datatype, likely an unsupported one
             PyErr_SetString(PyExc_ValueError, "Received an unsupported datatype.");
             return NULL;
         }
-        case EXCEPTION_SC: return NULL; // Error already set
-        case NESTDEPTH_SC:
+        case SC_EXCEPTION: return NULL; // Error already set
+        case SC_NESTDEPTH:
         {
             // Exceeded the maximum nest depth
             PyErr_SetString(PyExc_ValueError, "Exceeded the maximum value nest depth.");
             return NULL;
         }
-        case NOMEMORY_SC:
+        case SC_NOMEMORY:
         {
             // Not enough memory
             PyErr_SetString(PyExc_MemoryError, "Not enough memory space available for use.");
@@ -1082,22 +1054,16 @@ static inline PyObject *to_int_gen(ByteData *bd, size_t length)
 
 static inline PyObject *to_float_s(ByteData *bd)
 {
-    if (ensure_offset(bd, 1) == -1) return NULL;
+    if (ensure_offset(bd, 1 + sizeof(double)) == -1) return NULL;
 
-    // Get the size of the value
-    size_t size = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-
-    if (ensure_offset(bd, size + 1) == -1) return NULL;
+    // Get the bytes address that holds the double
+    double *bytes = (double *)&(bd->bytes[++bd->offset]);
 
     // Get the string of the float
-    PyObject *float_str = PyUnicode_FromStringAndSize((const char *)&(bd->bytes[++bd->offset]), size);
-    // Convert the string representative to a Python float
-    PyObject *float_obj = PyFloat_FromString(float_str);
-
-    Py_DECREF(float_str);
+    PyObject *float_obj = PyFloat_FromDouble(*bytes);
 
     // Update the offset to start at the next item
-    bd->offset += size;
+    bd->offset += sizeof(double);
 
     return float_obj;
 }
@@ -1501,7 +1467,7 @@ static inline PyObject *to_any_value(ByteData *bd)
     case INT_3:       return to_int_gen(bd, 3);
     case INT_4:       return to_int_gen(bd, 4);
     case INT_5:       return to_int_gen(bd, 5);
-    case FLOAT_D:     return to_float_s(bd);
+    case FLOAT_S:     return to_float_s(bd);
     case BOOL_T:      return to_bool_gen(bd, Py_True);
     case BOOL_F:      return to_bool_gen(bd, Py_False);
     case COMPLEX_S:   return to_complex_s(bd);

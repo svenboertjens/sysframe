@@ -56,6 +56,7 @@ static PyMethodDef methods[] = {
 void pybytes_module_cleanup(void *module)
 {
     // Dereference the global module variables
+    Py_XDECREF(sys_cl);
     Py_XDECREF(datetime_dt);
     Py_XDECREF(datetime_td);
     Py_XDECREF(datetime_d);
@@ -83,6 +84,27 @@ PyMODINIT_FUNC PyInit_pybytes(void)
 {
     // Init the Python interpreter
     Py_Initialize();
+
+    // Get the sys module
+    PyObject *sys_m = PyImport_ImportModule("sys");
+    if (sys_m == NULL)
+    {
+        // Datetime module was not found
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find module 'sys'.");
+        return NULL;
+    }
+
+    // Get the sys getsizeof class
+    sys_cl = PyObject_GetAttrString(sys_m, "getsizeof");
+
+    Py_DECREF(sys_m);
+
+    // Check whether the class isn't NULL
+    if (sys_cl == NULL)
+    {
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find attribute 'getsizeof' in module 'sys'.");
+        return NULL;
+    }
 
     // Import the datetime module
     PyDateTime_IMPORT;
