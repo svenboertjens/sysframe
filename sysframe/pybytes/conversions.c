@@ -1,6 +1,7 @@
 #define PY_SSIZE_T_CLEAN
 
 #include <Python.h>
+#include <datetime.h>
 #include <ctype.h>
 
 #include "conversions.h"
@@ -50,8 +51,8 @@
 #define PROT_STD_1 254 // Protocol 1, standard
 #define PROT_SFS_1 253 // Protocol 1, SFS (Simple File System)
 
-#define PROT_STD_S PROT_STD_1 // The default STD protocol
-#define PROT_SFS_S PROT_SFS_1 // The default SFS protocol
+#define PROT_STD_D PROT_STD_1 // The default STD protocol
+#define PROT_SFS_D PROT_SFS_1 // The default SFS protocol
 
 // # 'Standard' values
 
@@ -68,7 +69,7 @@
 #define INT_4   7 //  
 #define INT_5   8 //  The dynamic method for an int uses a single byte to represent the length
 #define INT_D1  9 //  at the D1, and two at the D2. An int that needs 255 bytes is already very,
-#define INT_D2 10 //* very large, and a number that needs 65536 is unreachable in the practical sense.
+#define INT_D2 10 //* very large, and a number that needs 65536 is practically unreachable.
 
 // Float
 #define FLOAT_S 11
@@ -152,6 +153,19 @@
 #define DECIMAL_2 55
 #define DECIMAL_D 56
 
+/*
+  # Datatypes to add:
+  
+  - NamedTuple
+  - Range
+  - Deque
+  - DefaultDict
+  - OrderedDict
+  - Enum
+  - Pathlib
+
+*/
+
 // # Return status codes
 
 typedef enum {
@@ -165,15 +179,14 @@ typedef enum {
 
 // # Other definitions
 
-#define ALLOC_SIZE 128 // The size to add when reallocating space for bytes
-#define MAX_NESTS  51  // The maximun amount of nests allowed
+#define ALLOC_SIZE 128 // The size to add when (re)allocating space for bytes
+#define MAX_NESTS  51  // The maximun amount of nests allowed, plus 1
 
 // Sys getsizeof class
 PyObject *sys_cl;
 
 // Datetime module classes
 PyObject *datetime_dt; // datetime
-PyObject *datetime_td; // timedelta
 PyObject *datetime_d;  // date
 PyObject *datetime_t;  // time
 
@@ -182,6 +195,123 @@ PyObject *uuid_cl;
 
 // Decimal module class
 PyObject *decimal_cl;
+
+// # Initialization and cleanup functions
+
+int conversions_init(void)
+{
+    // Get the sys module
+    PyObject *sys_m = PyImport_ImportModule("sys");
+    if (sys_m == NULL)
+    {
+        // Datetime module was not found
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find module 'sys'.");
+        return -1;
+    }
+
+    // Get the sys getsizeof class
+    sys_cl = PyObject_GetAttrString(sys_m, "getsizeof");
+
+    Py_DECREF(sys_m);
+
+    // Check whether the class isn't NULL
+    if (sys_cl == NULL)
+    {
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find attribute 'getsizeof' in module 'sys'.");
+        return -1;
+    }
+
+    // Import the datetime module
+    PyDateTime_IMPORT;
+
+    // Get the datetime module
+    PyObject *datetime_m = PyImport_ImportModule("datetime");
+    if (datetime_m == NULL)
+    {
+        // Datetime module was not found
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find module 'datetime'.");
+        return -1;
+    }
+
+    // Get the required datetime attributes
+    datetime_dt = PyObject_GetAttrString(datetime_m, "datetime");
+    datetime_d = PyObject_GetAttrString(datetime_m, "date");
+    datetime_t = PyObject_GetAttrString(datetime_m, "time");
+
+    // Check whether the attributes aren't NULL
+    if (datetime_dt == NULL)
+    {
+        // Cleanup of attributes is not necessary here, that's done on process exit in the finalize function
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find attribute 'datetime' in module 'datetime'.");
+        return -1;
+    }
+    if (datetime_d == NULL)
+    {
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find attribute 'date' in module 'datetime'.");
+        return -1;
+    }
+    if (datetime_t == NULL)
+    {
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find attribute 'time' in module 'datetime'.");
+        return -1;
+    }
+
+    Py_DECREF(datetime_m);
+
+    // Get the UUID module
+    PyObject* uuid_m = PyImport_ImportModule("uuid");
+    if (uuid_m == NULL)
+    {
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find module 'uuid'.");
+        return -1;
+    }
+
+    // Get the required attribute from the module
+    uuid_cl = PyObject_GetAttrString(uuid_m, "UUID");
+
+    Py_DECREF(uuid_m);
+
+    // Check whether the attribute isn't NULL
+    if (uuid_cl == NULL)
+    {
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find attribute 'UUID' in module 'uuid'.");
+        return -1;
+    }
+
+    // Get the decimal module
+    PyObject *decimal_m = PyImport_ImportModule("decimal");
+
+    if (decimal_m == NULL)
+    {
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find module 'decimal'.");
+        return -1;
+    }
+
+    // Get the required attribute from the module
+    decimal_cl = PyObject_GetAttrString(decimal_m, "Decimal");
+
+    Py_DECREF(decimal_m);
+
+    // Check whether the attribute isn't NULL
+    if (decimal_cl == NULL)
+    {
+        PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'Decimal' in module 'decimal'.");
+        return -1;
+    }
+
+    return 1;
+}
+
+void conversions_cleanup(void)
+{
+    // Decref all modules with XDECREF because they are NULL if not found
+    Py_XDECREF(sys_cl);
+    Py_XDECREF(datetime_dt);
+    Py_XDECREF(datetime_d);
+    Py_XDECREF(datetime_t);
+    Py_XDECREF(uuid_cl);
+    Py_XDECREF(decimal_cl);
+}
 
 // # Helper functions for the from-conversion functions
 
@@ -227,14 +357,6 @@ static inline StatusCode increment_nests(ValueData *vd)
     return SC_SUCCESS;
 }
 
-// Write a single char to the ValueData
-static inline StatusCode write_char(ValueData *vd, const unsigned char character)
-{
-    // Write the char to the bytes stack
-    vd->bytes[vd->offset++] = character;
-    return SC_SUCCESS;
-}
-
 // Function to initiate the ValueData class
 static inline ValueData init_vd(PyObject *value, StatusCode *status)
 {
@@ -248,16 +370,14 @@ static inline ValueData init_vd(PyObject *value, StatusCode *status)
     ValueData vd = {1, max_size, 0, (unsigned char *)malloc(max_size * sizeof(unsigned char))};
     if (vd.bytes == NULL)
     {
-        PyErr_SetString(PyExc_MemoryError, "No available memory space.");
         // Set the status
-        *status = SC_EXCEPTION;
+        *status = SC_NOMEMORY;
         return vd;
     }
 
     // Write the protocol byte
-    const unsigned char protocol = PROT_STD_S;
+    const unsigned char protocol = PROT_STD_D;
     vd.bytes[0] = protocol;
-
 
     *status = SC_SUCCESS;
 
@@ -364,6 +484,7 @@ static inline StatusCode write_E12D(ValueData *vd, Py_ssize_t size, const unsign
     return SC_SUCCESS;
 }
 
+// Function to convert C bytes to a size_t
 static inline size_t bytes_to_size_t(const unsigned char *bytes, size_t length)
 {
     size_t num = 0;
@@ -546,49 +667,71 @@ static inline StatusCode from_static_value(ValueData *vd, const unsigned char da
 
 static inline StatusCode from_datetime(ValueData *vd, PyObject *value, const char *datatype) // Datetype required for the type of datetime object
 {
-    // Create an iso format string of the datetime object
-    PyObject *iso = PyObject_CallMethod(value, "isoformat", NULL);
-    if (iso == NULL) return SC_INCORRECT;
-    
-    // Convert the iso string to bytes
-    Py_ssize_t size;
-    const char *bytes = PyUnicode_AsUTF8AndSize(iso, &size);
+    if (strcmp("datetime.timedelta", datatype) == 0)
+    {
+        if (!PyDelta_Check(value)) return SC_INCORRECT;
 
-    // Resize if necessary
-    if (auto_resize_vd(vd, 2 + size) == SC_NOMEMORY) return SC_NOMEMORY;
+        // Resize if necessary
+        if (auto_resize_vd(vd, 1 + (3 * sizeof(int))) == SC_NOMEMORY) return SC_NOMEMORY;
 
-    Py_DECREF(iso);
+        // Write the datachar
+        vd->bytes[vd->offset++] = DATETIME_TD;
 
-    // Decide the datachar of the datetime object type, and do type checks
-    if (strcmp("datetime.datetime", datatype) == 0)
-    {
-        if (!PyObject_IsInstance(value, datetime_dt)) return SC_INCORRECT;
-        vd->bytes[vd->offset++] = DATETIME_DT;
-    }
-    else if (strcmp("datetime.date", datatype) == 0)
-    {
-        if (!PyObject_IsInstance(value, datetime_d)) return SC_INCORRECT;
-        vd->bytes[vd->offset++] = DATETIME_D;
-    }
-    else if (strcmp("datetime.timedelta", datatype) == 0)
-    {
-        // TimeDelta objects aren't supported yet, mention explicitly
-        PyErr_SetString(PyExc_ValueError, "Sorry, 'datetime.timedelta' objects are not supported yet, though they will be later.");
-        return SC_EXCEPTION;
-    }
-    else if (strcmp("datetime.time", datatype) == 0)
-    {
-        if (!PyObject_IsInstance(value, datetime_t)) return SC_INCORRECT;
-        vd->bytes[vd->offset++] = DATETIME_T;
+        // Extract the components of the timedelta object
+        int days = PyDateTime_DELTA_GET_DAYS(value);
+        int seconds = PyDateTime_DELTA_GET_SECONDS(value);
+        int microseconds = PyDateTime_DELTA_GET_MICROSECONDS(value);
+
+        // Copy the components to the bytes stack
+        memcpy(&(vd->bytes[vd->offset]), &days, sizeof(int));
+        vd->offset += sizeof(int); // Increment to start at the unallocated space
+
+        memcpy(&(vd->bytes[vd->offset]), &seconds, sizeof(int));
+        vd->offset += sizeof(int);
+
+        memcpy(&(vd->bytes[vd->offset]), &microseconds, sizeof(int));
+        vd->offset += sizeof(int);
     }
     else
-        return SC_INCORRECT;
-    
-    // Write the size byte
-    vd->bytes[vd->offset++] = (const unsigned char)size;
-    // Write the bytes
-    memcpy(&(vd->bytes[vd->offset]), (const unsigned char *)bytes, size);
-    vd->offset += size;
+    {
+        // Create an iso format string of the datetime object
+        PyObject *iso = PyObject_CallMethod(value, "isoformat", NULL);
+        if (iso == NULL) return SC_INCORRECT;
+        
+        // Convert the iso string to bytes
+        Py_ssize_t size;
+        const char *bytes = PyUnicode_AsUTF8AndSize(iso, &size);
+
+        // Resize if necessary
+        if (auto_resize_vd(vd, 2 + size) == SC_NOMEMORY) return SC_NOMEMORY;
+
+        Py_DECREF(iso);
+
+        // Decide the datachar of the datetime object type and do type checks
+        if (strcmp("datetime.datetime", datatype) == 0)
+        {
+            if (!PyObject_IsInstance(value, datetime_dt)) return SC_INCORRECT;
+            vd->bytes[vd->offset++] = DATETIME_DT;
+        }
+        else if (strcmp("datetime.date", datatype) == 0)
+        {
+            if (!PyObject_IsInstance(value, datetime_d)) return SC_INCORRECT;
+            vd->bytes[vd->offset++] = DATETIME_D;
+        }
+        else if (strcmp("datetime.time", datatype) == 0)
+        {
+            if (!PyObject_IsInstance(value, datetime_t)) return SC_INCORRECT;
+            vd->bytes[vd->offset++] = DATETIME_T;
+        }
+        else
+            return SC_INCORRECT;
+        
+        // Write the size byte
+        vd->bytes[vd->offset++] = (const unsigned char)size;
+        // Write the bytes
+        memcpy(&(vd->bytes[vd->offset]), bytes, size);
+        vd->offset += size;
+    }
 
     return SC_SUCCESS;
 }
@@ -599,8 +742,7 @@ static inline StatusCode from_decimal(ValueData *vd, PyObject *value)
 
     // Get the string representation of the Decimal object
     PyObject* str = PyObject_Str(value);
-    if (str == NULL)
-        return SC_INCORRECT;
+    if (str == NULL) return SC_INCORRECT;
 
     // Get the string as C bytes and get its size
     Py_ssize_t size;
@@ -634,7 +776,7 @@ static inline StatusCode from_uuid(ValueData *vd, PyObject *value)
     // Write the datachar
     vd->bytes[vd->offset++] = UUID_S;
     // Write the value itself
-    memcpy(&(vd->bytes[vd->offset]), (const unsigned char *)bytes, 32); // Static size of 32
+    memcpy(&(vd->bytes[vd->offset]), bytes, 32); // Static size of 32
     vd->offset += 32;
 
     // Return success
@@ -1169,6 +1311,24 @@ static inline PyObject *to_datetime_gen(ByteData *bd, PyObject *method)
     return datetime_obj;
 }
 
+static inline PyObject *to_timedelta_s(ByteData *bd)
+{
+    // These will hold the days, seconds, and microseconds from the timedelta object
+    int days, seconds, microseconds;
+
+    memcpy(&days, &(bd->bytes[++bd->offset]), sizeof(int));
+    bd->offset += sizeof(int); // Increment to start at the next chunk
+
+    memcpy(&seconds, &(bd->bytes[bd->offset]), sizeof(int));
+    bd->offset += sizeof(int);
+    
+    memcpy(&microseconds, &(bd->bytes[bd->offset]), sizeof(int));
+    bd->offset += sizeof(int);
+
+    // Create and return the timedelta object
+    return PyDelta_FromDSU(days, seconds, microseconds);
+}
+
 static inline PyObject *to_uuid_s(ByteData *bd)
 {
     if (ensure_offset(bd, 33) == -1) return NULL;
@@ -1498,6 +1658,7 @@ static inline PyObject *to_any_value(ByteData *bd)
         return to_bytes_gen(bd, size_bytes_length, 1);
     }
     case DATETIME_DT: return to_datetime_gen(bd, datetime_dt);
+    case DATETIME_TD: return to_timedelta_s(bd);
     case DATETIME_D:  return to_datetime_gen(bd, datetime_d); 
     case DATETIME_T:  return to_datetime_gen(bd, datetime_t);
     case UUID_S:      return to_uuid_s(bd);
@@ -1601,7 +1762,7 @@ PyObject *to_value(PyObject *py_bytes)
     // Decide what to do based on the protocol version
     switch (protocol)
     {
-    case PROT_STD_S: // The default STD protocol
+    case PROT_STD_D: // The default STD protocol
     {
         // Get the length of this bytes object for memory allocation
         Py_ssize_t bytes_length = PyBytes_Size(py_bytes);

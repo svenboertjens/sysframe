@@ -79,6 +79,9 @@ class TestPybytes(TestCase):
         # Datetime (datetime)
         self.assertFromTo(datetime.datetime(2008, 6, 8, 23, 53))
         
+        # Datetime (timedelta)
+        self.assertFromTo(datetime.timedelta(5, 14, 12, 11, 43, 19, 2))
+        
         # Datetime (date)
         self.assertFromTo(datetime.date(2008, 6, 8))
         
@@ -101,6 +104,9 @@ class TestPybytes(TestCase):
     def test_misc_edgecases(self):
         # Datetime (datetime)
         self.assertFromTo(datetime.datetime(9999, 12, 31, 23, 59, 59, 999))
+        
+        # Datetime (timedelta)
+        self.assertFromTo(datetime.timedelta(6, 59, 999, 999, 59, 23, 51))
         
         # Datetime (date)
         self.assertFromTo(datetime.date(9999, 12, 31))

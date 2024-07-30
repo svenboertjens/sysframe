@@ -28,26 +28,7 @@ For detailed explanation per module, you can find a module-specific README in th
 ### Pybytes
 
 Pybytes is a module that's used for serializing and de-serializing values. It aims to keep the byte size smaller without sacrificing too much performance, making it suitable for system development.
-
-It supports the following datatypes:
-
-- `str`
-- `int`
-- `float`
-- `bool`
-- `complex`
-- `NoneType`
-- `ellipsis`
-- `bytes`
-- `bytearray`
-- `datetime`:
-    * `timedelta` (not yet, but hopefully soon)
-    * `datetime`
-    * `date`
-    * `time`
-- `uuid.UUID`
-- `memoryview`
-- `decimal.Decimal`
+It supports a wide range of datatypes, including datatypes from core modules (such as datetime or uuid). The list of available datatypes can be found in the modules README.
 
 Besides that, it also supports any of the standard list types, those being `list`, `dict`, `tuple`, `set` and `frozenset`. These are also allowed to be nested to a depth of 50.
 

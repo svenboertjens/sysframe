@@ -14,7 +14,26 @@ Even though there might be newer protocols in the future, it will still be possi
 To bytes:   `from_value(value: any) -> bytes`
 From bytes: `to_value(bytes_obj: bytes) -> any`
 
-The supported datatypes for `from_value` are listed in the main README.
+It supports the following datatypes:
+
+- `str`
+- `int`
+- `float`
+- `bool`
+- `complex`
+- `NoneType`
+- `ellipsis`
+- `bytes`
+- `bytearray`
+- `datetime`:
+    * `timedelta`
+    * `datetime`
+    * `date`
+    * `time`
+- `uuid.UUID`
+- `memoryview`
+- `decimal.Decimal`
+
 
 An example on how to use these functions:
 ```
