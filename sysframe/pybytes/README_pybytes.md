@@ -34,6 +34,9 @@ It supports the following datatypes:
 - `memoryview`
 - `decimal.Decimal`
 - `range`
+- `collections`:
+    * `deque`
+    * `namedtuple` (temporarily removed, will get reworked)
 
 
 An example on how to use these functions:
