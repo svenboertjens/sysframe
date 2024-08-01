@@ -4,167 +4,249 @@
 #include <datetime.h>
 #include <ctype.h>
 
-#include "conversions.h"
+#include "sbs_old/sbs_1.h"
+#include "sbs_2.h"
 
 /*
-  Down below are unique integer definitions, each representing a 'datachar' (datatype character).
+  ## Explanation of the SBS (Structured Bytes Stack) protocol
 
-  One datatype usually has multiple datachars, which stand for either the value type, or
-  the size byte mechanism for that value type.
+  # What is a 'Structured Bytes Stack'?
 
-  With the value types, I mean different (sub)value types within a value.
-  And with the size byte mechanism, I mean how the de-serialization algorithm
-  knows what the byte length is of the bytes that indicate the length of the
-  actual value, which comes after that. A dynamic size byte mechanism means that
-  there's a single byte that represents the size of the size bytes itself, which
-  then indicate the byte size of the actual value.
+  This protocol is called Structured Bytes Stack due to the method
+  used for stacking items on top of each other. There is no global
+  metadata dictionary anywhere, nor are there padding bytes in use.
+  That's why it's 'Structured'. The exact length of the value is
+  defined directly before it, and directly after the datatype
+  representation character. Also, there are different structures
+  in used to represent the exact length of the value. More on that
+  later. An example of a serialized string:
 
-  The datachar definitions are sorted from 'empty object' (if there is one), to
-  increasing byte sizes, so from 1 size byte, to 2 size bytes, up until the
-  dynamic size bytes mechanism.
+    'DATACHAR + SIZE_BYTES + VALUE_BYTES'
 
-  The variables are also named after a simple structure, being the datatype in capitals
-  followed by the type it stands for, such as 'STR_E' for an empty string, 'INT_1' for 
-  an integer with 1 size byte, or 'BYTES_D' for a bytes object with dynamic size bytes.
-  For static values, it's marked with an 'S', so for a float it's 'FLOAT_S'. Other special
-  cases are explained when used.
+  here, the datachar is that of a string (more on datachars below),
+  the size bytes represent the size of the value bytes, and the
+  value bytes is the string, but encoded (or, serialized).
 
-  The global markers are used to mark certain patterns or issues during the
-  convertion process. These are also used for marking the used protocol.
-  The global markers count down from 255 so that new ones can be added without
-  having to adjust the other markers and datachar representatives.
-  The protocol markers end with the version sign, like 1 or 3 or whatever.
-  The other markers have the M sign, which stands for marker.
+  An example of how it would look with the string "hello":
 
-  Apart from the 'standard' serialization, this module also supports a custom SFS
-  protocol. SFS stands for Simple File System, as it works similarly to one, and
-  is just a simplified version of one. This allows for manipulation of a bytestream
-  without having to de-serialize it completely, manipulating the value, and then
-  serializing it again. This uses a mapping format which is used to locate the
-  item to modify, so that it can be pulled. modified, or removed.
+    '0x01 0x05 h e l l o' (A space is placed between each character)
+
+  Here, the '0x01' is the datatype representative for a string that
+  requires less than 256 bytes to represent. The '0x05' is the length
+  of the encoded string, and then of course, the encoded string itself.
+
+
+  # The concept of datachars
+
+  Datachar is just short for 'datatype character'. A datachar is an
+  unique character for a specific datatype. These unique characters
+  are written as numbers, starting from 0.
+
+
+  # Datachar length representations
+
+  Most datatypes are represented by multiple datachars. Their macro
+  names are structured in a simple way: the datatype name, then an
+  underscore, and then the length representation. For example, with
+  a 'str' datatype, you can have STR_1.
+
+  The length representations that follow the datatype name all have
+  basically the same meaning. Usually, they're structured as follows:
+  
+    'E':  The value is empty. (not always present, because not always required).
+    '1':  One byte is used to represent the byte length.
+    '2':  Two bytes are used to represent the byte length.
+    'D1': One byte is used to represent the length of the byte length representation.
+    'D2': Same as D1, except the 'one byte' is multiple bytes, and the length of that is also represented in a byte before.
+  
+  Other than that, for static values, the tag 'S' is used. And if
+  there are other tags or structures in use, they are explained on
+  their macros explicitly.
+
+
+  # Protocols
+
+  There are multiple protocols in use. The older protocols are
+  still supported for de-serialization, but no longer support
+  the serialization. The standard serialization protocol that is
+  currently in use is called `PROT_SBS_D`, which stands for
+  'Protocol SBS, Default'. The 'SBS' tag is used to separate
+  it from the SFS protocols.
+
+
+  # Markers
+
+  Markers are basically the miscellaneous datachars. They aren't
+  used for representing datatypes and count downward from 255.
+  The markers are explained at the macro definitions.
+
+  Currently there's just one marker, and it isn't even in use yet.
+  Though they might have a good use for later, so that's why.
+
+
+  # SCs (Status Code)
+
+  Within the serialization functions, we use SCs to mark errors or other
+  issues. This is only in use due to the fact that serialization
+  involves a broader range of potential issues, as well as common
+  issues like receiving an unsupported or incorrect datatype.
+
+  All issues can be handled in a single location this way, said
+  location being the 'main' serialization function (from_value).
+  There are exceptions that are used to set a static error message,
+  but there's also one which allows you to set a custom one before
+  returning it, that being 'SC_EXCEPTION'.
+
+
+  # Plan for support
+
+  The following datatypes are planned to be supported in the future:
+
+  - collections.namedtuple (needs rework due to issues)
+  - collections.Counter
+  - collections.defaultdict
+  - collections.ordereddict
+  - pathlib.Path
+
+  Aside those specific datatypes, more datatypes from core libraries
+  will be included in the future as well, such as from 'collections'.
 
 */
 
 // # 'Global' markers
 
-#define EXT_M      255 // Reserved for if we ever happen to run out of a single byte to represent stuff
-#define PROT_STD_1 254 // Protocol 1, standard
-#define PROT_SFS_1 253 // Protocol 1, SFS (Simple File System)
+#define EXT_M  255 // Reserved for if we ever happen to run out of a single byte to represent stuff
+#define PROT_1 254 // Protocol 1
+#define PROT_2 253 // Protocol 2
 
-#define PROT_STD_D PROT_STD_1 // The default STD protocol
-#define PROT_SFS_D PROT_SFS_1 // The default SFS protocol
+#define PROT_SBS_D PROT_2 // The default SBS protocol
+#define PROT_SFS_D PROT_1 // The default SFS protocol
 
 // # 'Standard' values
 
 // String
-#define STR_E 0
-#define STR_1 1
-#define STR_2 2
-#define STR_D 3
+#define STR_E  0
+#define STR_1  1
+#define STR_2  2
+#define STR_D1 3
+#define STR_D2 4
 
 // Integer
-#define INT_1   4 //* For integers, we don't use byte representations, as integers can be
-#define INT_2   5 //  stored much more compact. Thus, INT_1 means the int value is 1 byte
-#define INT_3   6 //  long, INT_2 means it's 2 bytes, etc.
-#define INT_4   7 //  
-#define INT_5   8 //  The dynamic method for an int uses a single byte to represent the length
-#define INT_D1  9 //  at the D1, and two at the D2. An int that needs 255 bytes is already very,
-#define INT_D2 10 //* very large, and a number that needs 65536 is practically unreachable.
+#define INT_1   5 //* For integers, we don't use byte representations, as integers can be
+#define INT_2   6 //  stored much more compact. Thus, INT_1 means the int value is 1 byte
+#define INT_3   7 //  long, INT_2 means it's 2 bytes, etc., except for larger ints.
+#define INT_4   8 //  
+#define INT_5   9 //  The dynamic method for an int uses a single byte to represent the length
+#define INT_D1 10 //  at the D1. At D2, we're just using the dynamic 2 method.
+#define INT_D2 11 //* 
 
 // Float
-#define FLOAT_S 11
+#define FLOAT_S 12
 
 // Boolean
-#define BOOL_T 12 // Use T for True values
-#define BOOL_F 13 // Use F for False values
+#define BOOL_T 13 // Use T for True values
+#define BOOL_F 14 // Use F for False values
 
 // Complex
-#define COMPLEX_S 14
+#define COMPLEX_S 15
 
 // NoneType
-#define NONE_S 15
+#define NONE_S 16
 
 // Ellipsis
-#define ELLIPSIS_S 16
+#define ELLIPSIS_S 17
 
 // Bytes
-#define BYTES_E 17
-#define BYTES_1 18
-#define BYTES_2 19
-#define BYTES_D 20
+#define BYTES_E  18
+#define BYTES_1  19
+#define BYTES_2  20
+#define BYTES_D1 21
+#define BYTES_D2 22
 
 // ByteArray
-#define BYTEARR_E 21
-#define BYTEARR_1 22
-#define BYTEARR_2 23
-#define BYTEARR_D 24
+#define BYTEARR_E  23
+#define BYTEARR_1  24
+#define BYTEARR_2  25
+#define BYTEARR_D1 26
+#define BYTEARR_D2 27
 
 // # 'List type' values
 
 // List
-#define LIST_E 25
-#define LIST_1 26
-#define LIST_2 27
-#define LIST_D 28
+#define LIST_E  28
+#define LIST_1  29
+#define LIST_2  30
+#define LIST_D1 31
+#define LIST_D2 32
 
 // Set
-#define SET_E 29
-#define SET_1 30
-#define SET_2 31
-#define SET_D 32
+#define SET_E  33
+#define SET_1  34
+#define SET_2  35
+#define SET_D1 36
+#define SET_D2 37
 
 // Tuple
-#define TUPLE_E 33
-#define TUPLE_1 34
-#define TUPLE_2 35
-#define TUPLE_D 36
+#define TUPLE_E  38
+#define TUPLE_1  39
+#define TUPLE_2  40
+#define TUPLE_D1 41
+#define TUPLE_D2 42
 
 // Dictionary
-#define DICT_E 37
-#define DICT_1 38
-#define DICT_2 39
-#define DICT_D 40
+#define DICT_E  43
+#define DICT_1  44
+#define DICT_2  45
+#define DICT_D1 46
+#define DICT_D2 47
 
 // FrozenSet
-#define FSET_E 41
-#define FSET_1 42
-#define FSET_2 43
-#define FSET_D 44
+#define FSET_E  48
+#define FSET_1  49
+#define FSET_2  50
+#define FSET_D1 51
+#define FSET_D2 52
 
-// # 'Miscellaneous' values
+// # 'Miscellaneous' values (includes items you could consider 'list type', but placed here due to having to be imported)
 
 // DateTime
-#define DATETIME_DT 45 // DT for DateTime objects
-#define DATETIME_TD 46 // TD for TimeDelta objects // TODO: NOT IMPLEMENTED YET
-#define DATETIME_D  47 // D  for Date objects
-#define DATETIME_T  48 // T  for Time objects
+#define DATETIME_DT 53 // DT for DateTime objects
+#define DATETIME_TD 54 // TD for TimeDelta objects
+#define DATETIME_D  55 // D  for Date objects
+#define DATETIME_T  56 // T  for Time objects
 
 // UUID
-#define UUID_S 49
+#define UUID_S 57
 
 // MemoryView
-#define MEMVIEW_E 50
-#define MEMVIEW_1 51
-#define MEMVIEW_2 52
-#define MEMVIEW_D 53
+#define MEMVIEW_E  58
+#define MEMVIEW_1  59
+#define MEMVIEW_2  60
+#define MEMVIEW_D1 61
+#define MEMVIEW_D2 62
 
 // Decimal
-#define DECIMAL_1 54
-#define DECIMAL_2 55
-#define DECIMAL_D 56
+#define DECIMAL_1  63
+#define DECIMAL_2  64
+#define DECIMAL_D1 65
+#define DECIMAL_D2 66
 
-/*
-  # Datatypes to add:
-  
-  - NamedTuple
-  - Range
-  - Deque
-  - DefaultDict
-  - OrderedDict
-  - Enum
-  - Pathlib
+// Range
+#define RANGE_S 67
 
-*/
+// Namedtuple
+#define NTUPLE_E  68
+#define NTUPLE_1  69
+#define NTUPLE_2  70
+#define NTUPLE_D1 71
+#define NTUPLE_D2 72
+
+// Deque
+#define DEQUE_E  73
+#define DEQUE_1  74
+#define DEQUE_2  75
+#define DEQUE_D1 76
+#define DEQUE_D2 77
 
 // # Return status codes
 
@@ -180,10 +262,7 @@ typedef enum {
 // # Other definitions
 
 #define ALLOC_SIZE 128 // The size to add when (re)allocating space for bytes
-#define MAX_NESTS  51  // The maximun amount of nests allowed, plus 1
-
-// Sys getsizeof class
-PyObject *sys_cl;
+#define MAX_NESTS  101 // The maximun amount of nests allowed, plus 1
 
 // Datetime module classes
 PyObject *datetime_dt; // datetime
@@ -196,30 +275,23 @@ PyObject *uuid_cl;
 // Decimal module class
 PyObject *decimal_cl;
 
+// Namedtuple module class
+PyObject *namedtuple_cl;
+
+// Deque module class
+PyObject *deque_cl;
+
 // # Initialization and cleanup functions
 
-int conversions_init(void)
+int sbs2_init(void)
 {
-    // Get the sys module
-    PyObject *sys_m = PyImport_ImportModule("sys");
-    if (sys_m == NULL)
-    {
-        // Datetime module was not found
-        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find module 'sys'.");
-        return -1;
-    }
+    /*
+      As this module supports various datatypes from core libraries, we
+      have to import those. For performance, the specific classes of said
+      modules that we have to use for the serialization methods are defined,
+      so that we don't have to get those attributes at runtime.
 
-    // Get the sys getsizeof class
-    sys_cl = PyObject_GetAttrString(sys_m, "getsizeof");
-
-    Py_DECREF(sys_m);
-
-    // Check whether the class isn't NULL
-    if (sys_cl == NULL)
-    {
-        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find attribute 'getsizeof' in module 'sys'.");
-        return -1;
-    }
+    */
 
     // Import the datetime module
     PyDateTime_IMPORT;
@@ -241,18 +313,17 @@ int conversions_init(void)
     // Check whether the attributes aren't NULL
     if (datetime_dt == NULL)
     {
-        // Cleanup of attributes is not necessary here, that's done on process exit in the finalize function
-        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find attribute 'datetime' in module 'datetime'.");
+        PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'datetime' in module 'datetime'.");
         return -1;
     }
-    if (datetime_d == NULL)
+    else if (datetime_d == NULL)
     {
-        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find attribute 'date' in module 'datetime'.");
+        PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'date' in module 'datetime'.");
         return -1;
     }
-    if (datetime_t == NULL)
+    else if (datetime_t == NULL)
     {
-        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find attribute 'time' in module 'datetime'.");
+        PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'time' in module 'datetime'.");
         return -1;
     }
 
@@ -274,7 +345,7 @@ int conversions_init(void)
     // Check whether the attribute isn't NULL
     if (uuid_cl == NULL)
     {
-        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find attribute 'UUID' in module 'uuid'.");
+        PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'UUID' in module 'uuid'.");
         return -1;
     }
 
@@ -299,18 +370,42 @@ int conversions_init(void)
         return -1;
     }
 
+    // Get the collections module
+    PyObject *collections_m = PyImport_ImportModule("collections");
+    if (collections_m == NULL)
+    {
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find module 'collections'.");
+        return -1;
+    }
+
+    // Get the required attributes
+    namedtuple_cl = PyObject_GetAttrString(collections_m, "namedtuple");
+    deque_cl = PyObject_GetAttrString(collections_m, "deque");
+
+    if (namedtuple_cl == NULL)
+    {
+        PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'namedtuple' in module 'collections'.");
+        return -1;
+    }
+    else if (deque_cl == NULL)
+    {
+        PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'deque' in module 'collections'.");
+        return -1;
+    }
+
     return 1;
 }
 
-void conversions_cleanup(void)
+void sbs2_cleanup(void)
 {
     // Decref all modules with XDECREF because they are NULL if not found
-    Py_XDECREF(sys_cl);
     Py_XDECREF(datetime_dt);
     Py_XDECREF(datetime_d);
     Py_XDECREF(datetime_t);
     Py_XDECREF(uuid_cl);
     Py_XDECREF(decimal_cl);
+    Py_XDECREF(namedtuple_cl);
+    Py_XDECREF(deque_cl);
 }
 
 // # Helper functions for the from-conversion functions
@@ -326,6 +421,13 @@ typedef struct {
 // This function resizes the bytes of the ValueData when necessary
 static inline StatusCode auto_resize_vd(ValueData *vd, Py_ssize_t jump)
 {
+    /*
+      This function automatically resizes the allocated space for the bytes
+      variable in the ValueData struct. It returns a status code just like
+      the datatype serialization functions to handle failed reallocs.
+
+    */
+
     // Check if we need to reallocate for more space with the given jump
     if (vd->offset + jump > vd->max_size)
     {
@@ -333,7 +435,12 @@ static inline StatusCode auto_resize_vd(ValueData *vd, Py_ssize_t jump)
         vd->max_size += jump + ALLOC_SIZE;
         // Reallocate to the new max size
         unsigned char *temp = (unsigned char *)realloc((void *)(vd->bytes), vd->max_size * sizeof(unsigned char));
-        if (temp == NULL) return SC_NOMEMORY; // Return no memory issue
+        if (temp == NULL)
+        {
+            // Free the already allocated bytes
+            free(vd->bytes);
+            return SC_NOMEMORY;
+        }
 
         // Update the bytes to point to the new allocated bytes
         vd->bytes = temp;
@@ -346,6 +453,14 @@ static inline StatusCode auto_resize_vd(ValueData *vd, Py_ssize_t jump)
 // This function updates the nest depth and whether we've reached the max nests
 static inline StatusCode increment_nests(ValueData *vd)
 {
+    /*
+      This function keeps track of the current nest depth, to ensure we
+      don't go past the max nests. Technically, we could support an arbitrary
+      depth, but this is used to handle circular references. Thus, a large nest
+      depth is supported to maintain versatility.
+
+    */
+
     // Increment the nest depth
     vd->nests++;
     // Check whether we reached the max nest depth
@@ -360,14 +475,20 @@ static inline StatusCode increment_nests(ValueData *vd)
 // Function to initiate the ValueData class
 static inline ValueData init_vd(PyObject *value, StatusCode *status)
 {
-    // Attempt to estimate what the max possible byte size will be using sys.getsizeof
-    PyObject *max_size_num = PyObject_CallFunctionObjArgs(sys_cl, value);
-    Py_ssize_t max_size = PyLong_AsSsize_t(max_size_num) + ALLOC_SIZE; // Add the alloc size as headroom
+    /*
+      This function creates a ValueData struct for us, and pre-allocates
+      an estimated size of the value plus the default alloc size to have
+      enough headroom, while still refraining from allocating either too
+      little, causing performance degradation due to frequent reallocs,
+      or too much, using up unnecessary memory space.
 
-    Py_DECREF(max_size_num);
+    */
+
+    // Attempt to estimate what the max possible byte size will be using sys.getsizeof
+    size_t max_size = _PySys_GetSizeOf(value) + ALLOC_SIZE; // Add the alloc size as headroom
 
     // Create the struct itself
-    ValueData vd = {1, max_size, 0, (unsigned char *)malloc(max_size * sizeof(unsigned char))};
+    ValueData vd = {1, (Py_ssize_t)max_size, 0, (unsigned char *)malloc(max_size * sizeof(unsigned char))};
     if (vd.bytes == NULL)
     {
         // Set the status
@@ -376,7 +497,7 @@ static inline ValueData init_vd(PyObject *value, StatusCode *status)
     }
 
     // Write the protocol byte
-    const unsigned char protocol = PROT_STD_D;
+    const unsigned char protocol = PROT_SBS_D;
     vd.bytes[0] = protocol;
 
     *status = SC_SUCCESS;
@@ -390,6 +511,7 @@ static inline Py_ssize_t get_num_bytes(Py_ssize_t value)
     // Determine the number of bytes needed
     Py_ssize_t num_bytes = 0;
     Py_ssize_t temp = value;
+
     while (temp > 0) {
         num_bytes++;
         temp >>= 8;
@@ -398,22 +520,56 @@ static inline Py_ssize_t get_num_bytes(Py_ssize_t value)
     return num_bytes;
 }
 
+// Function to write size bytes
+static inline void write_size_bytes(ValueData *vd, Py_ssize_t num, Py_ssize_t num_bytes)
+{
+    /*
+      Write a number as bytes to the bytes stack. This is done by
+      taking the first 256 bytes and storing them as a single char,
+      then shifting them to the next 256 bytes and store those, etc.
+
+    */
+
+    // Write the size as bytes
+    for (Py_ssize_t i = 0; i < num_bytes; i++) {
+        vd->bytes[vd->offset++] = (unsigned char)(num & 0xFF);
+        num >>= 8;
+    }
+}
+
 // Function to write the datachar and the size as bytes
-static inline StatusCode write_metadata(ValueData *vd, const unsigned char datachar, Py_ssize_t value, Py_ssize_t num_bytes) {
+static inline StatusCode write_metadata(ValueData *vd, const unsigned char datachar, Py_ssize_t num, Py_ssize_t num_bytes)
+{
+    /*
+      This function stores the 'regular' (non-dynamic method) metadata
+      for a value. The metadata is just the datachar with the size bytes
+      written after it.
+
+    */
+
     // Write the datachar
     vd->bytes[vd->offset++] = datachar;
 
-    // Write the size as bytes directly
-    for (Py_ssize_t i = 0; i < num_bytes; i++) {
-        vd->bytes[vd->offset++] = (unsigned char)(value & 0xFF);
-        value >>= 8;
-    }
+    // Write the size bytes
+    write_size_bytes(vd, num, num_bytes);
 
     return SC_SUCCESS;
 }
 
 // Alike the regular write-metadata function, but also writes the dynamic datachar
-static inline StatusCode write_dynamic_metadata(ValueData *vd, const unsigned char datachar, Py_ssize_t value, Py_ssize_t num_bytes) {
+static inline StatusCode write_dynamic1_metadata(ValueData *vd, const unsigned char datachar, Py_ssize_t num, Py_ssize_t num_bytes)
+{
+    /*
+      This function writes the metadata for a dynamic 1 method.
+      The dynamic 1 method stores the size of the value by writing
+      the length of the size bytes as one byte, and then the size
+      bytes, so that we know the exact length of the size bytes.
+
+      If the length of the size bytes can't be stored in a single byte,
+      the dynamic 2 method is used.
+
+    */
+
     // Resize if necessary
     if (auto_resize_vd(vd, num_bytes + 2) == SC_NOMEMORY) return SC_NOMEMORY;
 
@@ -422,14 +578,49 @@ static inline StatusCode write_dynamic_metadata(ValueData *vd, const unsigned ch
     // Write the dynamic size byte
     vd->bytes[vd->offset++] = (const unsigned char)num_bytes;
 
-    // Write the size as bytes directly
-    for (Py_ssize_t i = 0; i < num_bytes; i++) {
-        vd->bytes[vd->offset + i] = (unsigned char)(value & 0xFF);
-        value >>= 8;
-    }
+    // Write the size bytes
+    write_size_bytes(vd, num, num_bytes);
 
-    // Update the offset
-    vd->offset += num_bytes;
+    return SC_SUCCESS;
+}
+
+static inline StatusCode write_dynamic2_metadata(ValueData *vd, const unsigned char datachar, Py_ssize_t num, Py_ssize_t num_bytes)
+{
+    /*
+      This function writes the metadata for a dynamic 2 method.
+      This is similar to the dynamic 1 method, except it supports
+      even larger byte sizes by storing the length of the length of
+      the size bytes as well. Because that will fit in 1 byte for sure.
+
+      The phrase 'the length of the length of the size bytes' might
+      sound a bit confusing, so here's what it means exactly: As the
+      length of the size bytes will be more than 1 byte, we have to know
+      how many bytes it will take up. So, that number is 'the length of
+      the length of the size bytes'.
+
+      The limit of supporting up to 255^255^255-1 bytes (because this
+      method allows that) is practically unreachable. Thus, this is the
+      limit we have. If sometime in the future we will ever need to support
+      a size larger than this, I'm not sure if this module will even be
+      relevant anymore. So no need to worry about that limit, it's plenty.
+
+    */
+    
+    // Get the length of the num bytes
+    Py_ssize_t num_bytes_length = get_num_bytes(num_bytes);
+
+    // Resize if necessary
+    if (auto_resize_vd(vd, num_bytes + 2) == SC_NOMEMORY) return SC_NOMEMORY;
+
+    // Write the datachar
+    vd->bytes[vd->offset++] = datachar;
+    // Write the num bytes length
+    vd->bytes[vd->offset++] = (const unsigned char)num_bytes_length;
+    // Write the num bytes
+    write_size_bytes(vd, num_bytes, num_bytes_length);
+
+    // Write the size bytes
+    write_size_bytes(vd, num, num_bytes);
 
     return SC_SUCCESS;
 }
@@ -437,6 +628,15 @@ static inline StatusCode write_dynamic_metadata(ValueData *vd, const unsigned ch
 // Function to write the full data with an E-1-2-D setup
 static inline StatusCode write_E12D(ValueData *vd, Py_ssize_t size, const unsigned char *bytes, const unsigned char empty)
 {
+    /*
+      This function is used to store the full data of a datatype, which
+      is just the metadata plus the bytes of the value. The 'E-1-2-D' setup
+      is just the setup where there's an optional 'E' tag with the datachars,
+      and a mandatory '1', '2', 'D1', and 'D2' tag. This function calculates
+      which to use and writes the size bytes for us.
+
+    */
+
     Py_ssize_t num_bytes = get_num_bytes(size);
 
     // Check if we can use regular datachars or have to use the dynamic datachar
@@ -459,15 +659,33 @@ static inline StatusCode write_E12D(ValueData *vd, Py_ssize_t size, const unsign
         if (auto_resize_vd(vd, num_bytes + size + 1) == SC_NOMEMORY) return SC_NOMEMORY;
 
         // Write the metadata and set the datachar to the empty one plus the offset, to get the 1 or 2 case datachar
-        if (write_metadata(vd, empty + num_bytes, size, num_bytes) == SC_NOMEMORY) return SC_NOMEMORY;
+        write_metadata(vd, empty + num_bytes, size, num_bytes);
         break;
     }
     default:
     {
-        // Resize if necessary
-        if (auto_resize_vd(vd, num_bytes + size + 1) == SC_NOMEMORY) return SC_NOMEMORY;
-        // Write the dynamic metadata
-        if (write_dynamic_metadata(vd, empty + 3, size, num_bytes) == SC_NOMEMORY) return SC_NOMEMORY;
+        // Check whether to use dynamic 1 or 2 method
+        if (num_bytes < 256) // Smaller than 1 byte
+        {
+            // Resize if necessary
+            if (auto_resize_vd(vd, num_bytes + size + 1) == SC_NOMEMORY) return SC_NOMEMORY;
+            // Write the dynamic metadata
+            if (write_dynamic1_metadata(vd, (const unsigned char)(empty + 3), size, num_bytes) == SC_NOMEMORY) return SC_NOMEMORY;
+        }
+        else if (num_bytes < (255^255) - 1) // Smaller than 256 bytes
+        {
+            // Resize if necessary
+            if (auto_resize_vd(vd, num_bytes + size + 1) == SC_NOMEMORY) return SC_NOMEMORY;
+            // Write the dynamic metadata
+            if (write_dynamic2_metadata(vd, empty + 4, size, num_bytes) == SC_NOMEMORY) return SC_NOMEMORY;
+        }
+        else
+        {
+            // We don't support values of this size, as this is highly unlikely to even be reached
+            PyErr_SetString(PyExc_ValueError, "Values of this size aren't supported.");
+            return SC_EXCEPTION;
+        }
+        
         break;
     }
     }
@@ -487,9 +705,18 @@ static inline StatusCode write_E12D(ValueData *vd, Py_ssize_t size, const unsign
 // Function to convert C bytes to a size_t
 static inline size_t bytes_to_size_t(const unsigned char *bytes, size_t length)
 {
+    /*
+      This function converts a C bytes object to the number it represents,
+      with little-endianness. This is done by moving the byte of each
+      iteration to the start, creating a number of that one byte. And that
+      number gets shifted onto the 'total' number, creating the actual number
+      after the amount of parsed iterations, or 'length'.
+
+    */
+    
     size_t num = 0;
 
-    // Convert the byte array back to a size_t value (little-endian)
+    // Convert the byte array back to a size_t value
     for (size_t i = 0; i < length; ++i)
     {
         num |= ((size_t)bytes[i]) << (i * 8);
@@ -517,10 +744,18 @@ static inline StatusCode from_string(ValueData *vd, PyObject *value) // VD is sh
 
 static inline StatusCode from_integer(ValueData *vd, PyObject *value)
 {
+    /*
+      As integers are stored slightly differently compared to the
+      other datatypes, we will handle them more directly here compared
+      to using the 'write_E12D' function. This is also why the integer
+      has more datachars, so that we can store it slightly more compact.
+
+    */
+    
     if (!PyLong_Check(value)) return SC_INCORRECT;
 
     // Calculate number of bytes needed, including the sign bit
-    size_t num_bytes = (Py_SIZE(value) > 0) ? ((_PyLong_NumBits(value) + 8) / 8) : 1;
+    size_t num_bytes = Py_SIZE(value) > 0 ? (_PyLong_NumBits(value) + 8) / 8 : 1;
 
     // Determine datachar and dynamic length
     unsigned char datachar;
@@ -549,13 +784,28 @@ static inline StatusCode from_integer(ValueData *vd, PyObject *value)
     }
     else if (is_dynamic == 2)
     {
-        vd->bytes[vd->offset++] = (const unsigned char)(num_bytes & 0xFF);
-        num_bytes >>= 8;
-        vd->bytes[vd->offset++] = (const unsigned char)(num_bytes & 0xFF);
+        // Get the length of the num bytes
+        size_t num_bytes_length = get_num_bytes(num_bytes);
+
+        // Check whether the num bytes length doesn't exceed the limit
+        if (num_bytes_length > 255)
+        {
+            PyErr_SetString(PyExc_ValueError, "Integers of this size are not supported.");
+            return SC_EXCEPTION;
+        }
+
+        // Resize if necessary
+        if (auto_resize_vd(vd, 1 + num_bytes_length) == SC_NOMEMORY) return SC_NOMEMORY;
+
+        // Write the num bytes length
+        vd->bytes[vd->offset++] = (const unsigned char)num_bytes_length;
+
+        // Write the num bytes themselves
+        write_size_bytes(vd, num_bytes, num_bytes_length);
     }
 
-    // Write the bytes directly to the bytes stack instead of allocating a bytes object and using write_vd
-    if (_PyLong_AsByteArray((PyLongObject *)value, &(vd->bytes[vd->offset]), num_bytes, 1, 1) == -1) return SC_INCORRECT;
+    // Write the bytes directly to the bytes stack
+    if (_PyLong_AsByteArray((PyLongObject *)value, &(vd->bytes[vd->offset]), num_bytes, 1, 1) == -1) return SC_EXCEPTION;
 
     // Update the offset
     vd->offset += num_bytes;
@@ -570,7 +820,7 @@ static inline StatusCode from_float(ValueData *vd, PyObject *value)
     // Resize if necessary
     if (auto_resize_vd(vd, 1 + sizeof(double)) == SC_NOMEMORY) return SC_NOMEMORY;
 
-    // Assign the datachar
+    // Write the datachar
     vd->bytes[vd->offset++] = FLOAT_S;
 
     // Write the float converted to a double to the bytes
@@ -795,10 +1045,46 @@ static inline StatusCode from_memoryview(ValueData *vd, PyObject *value)
         return SC_EXCEPTION;
     }
 
+    // Resize if necessary
+    if (auto_resize_vd(vd, 1 + view.len) == SC_NOMEMORY)
+    {
+        PyBuffer_Release(&view);
+        return SC_NOMEMORY;
+    }
+
     // Write the data
     if (write_E12D(vd, view.len, (const unsigned char *)view.buf, MEMVIEW_E) == SC_NOMEMORY) return SC_NOMEMORY;
 
     PyBuffer_Release(&view);
+
+    return SC_SUCCESS;
+}
+
+static inline StatusCode from_range(ValueData *vd, PyObject *value)
+{
+    // As the range attributes can have arbitrary size, use the from_integer function for them
+
+    // Resize if necessary
+    if (auto_resize_vd(vd, 1) == SC_NOMEMORY) return SC_NOMEMORY;
+
+    // Write the datachar
+    vd->bytes[vd->offset++] = RANGE_S;
+
+    // Get the start, stop, and step attributes
+    PyObject *start = PyObject_GetAttrString(value, "start");
+    PyObject *stop = PyObject_GetAttrString(value, "stop");
+    PyObject *step = PyObject_GetAttrString(value, "step");
+
+    // Write them as integers
+    StatusCode status; // This will hold the status
+    if ((status = from_integer(vd, start)) != SC_SUCCESS) return status; // Set the status and return it if not success
+    if ((status = from_integer(vd, stop)) != SC_SUCCESS) return status;
+    if ((status = from_integer(vd, step)) != SC_SUCCESS) return status;
+
+    // Decref the attributes as we created them ourselves
+    Py_DECREF(start);
+    Py_DECREF(stop);
+    Py_DECREF(step);
 
     return SC_SUCCESS;
 }
@@ -826,11 +1112,9 @@ static inline StatusCode from_list(ValueData *vd, PyObject *value)
     {
         // Get the item from the list
         PyObject *item = PyList_GET_ITEM(value, i);
-        // Write it to the valuedata and get the status
-        int status = from_any_value(vd, item);
-
-        // Return the status code if it's not success
-        if (status != SC_SUCCESS) return status;
+        // Write it to the bytes stack
+        StatusCode status; // This will hold the status
+        if ((status = from_any_value(vd, item)) != SC_SUCCESS) return status; // Set the status and return it if not success
     }
 
     // Decrement the nest depth
@@ -841,7 +1125,7 @@ static inline StatusCode from_list(ValueData *vd, PyObject *value)
 
 static inline StatusCode from_tuple(ValueData *vd, PyObject *value)
 {
-    if (!PyTuple_Check(value)) return SC_INCORRECT;
+    // Already checked if it's a tuple
     
     // Increment the nest depth and return if it's too deep
     if (increment_nests(vd) == SC_NESTDEPTH) return SC_NESTDEPTH;
@@ -856,9 +1140,10 @@ static inline StatusCode from_tuple(ValueData *vd, PyObject *value)
     for (Py_ssize_t i = 0; i < num_items; i++)
     {
         // Get the item from the list
-        PyObject *item = PyTuple_GetItem(value, i);
-        // Write it to the valuedata and get the status
-        int status = from_any_value(vd, item);
+        PyObject *item = PyTuple_GET_ITEM(value, i);
+        // Write it to the bytes stack
+        StatusCode status;
+        if ((status = from_any_value(vd, item)) != SC_SUCCESS) return status;
 
         // Return the status code if it's not success
         if (status != SC_SUCCESS) return status;
@@ -870,21 +1155,15 @@ static inline StatusCode from_tuple(ValueData *vd, PyObject *value)
     return SC_SUCCESS;
 }
 
-// Function fro both sets and frozensets
-static inline StatusCode from_set_frozenset(ValueData *vd, PyObject *value, int is_frozenset)
+// Function for any iterable type value
+static inline StatusCode from_iterable(ValueData *vd, PyObject *value, const unsigned char empty) // Get the E-tag datachar for the 'write_E12D' function
 {
-    if (!PySet_Check(value) && !PyFrozenSet_Check(value)) return SC_INCORRECT;
-    
     // Increment the nest depth and return if it's too deep
     if (increment_nests(vd) == SC_NESTDEPTH) return SC_NESTDEPTH;
     
     // Create an iterator from the set so that we can count the items
     PyObject *count_iter = PyObject_GetIter(value);
-    if (count_iter == NULL)
-    {
-        PyErr_SetString(PyExc_RuntimeError, "Could not get an iterator of a set type.");
-        return SC_EXCEPTION;
-    }
+    if (count_iter == NULL) return SC_INCORRECT; // Likely not an iterable type that we received
     
     // This will hold the number of items in the iterator
     Py_ssize_t num_items = 0;
@@ -895,15 +1174,10 @@ static inline StatusCode from_set_frozenset(ValueData *vd, PyObject *value, int 
         num_items++;
     }
 
+    Py_DECREF(count_iter);
+
     // Write the metadata
-    if (is_frozenset == 1)
-    {
-        if (write_E12D(vd, num_items, NULL, FSET_E) == SC_NOMEMORY) return SC_NOMEMORY;
-    }
-    else
-    {
-        if (write_E12D(vd, num_items, NULL, SET_E) == SC_NOMEMORY) return SC_NOMEMORY;
-    }
+    if (write_E12D(vd, num_items, NULL, empty) == SC_NOMEMORY) return SC_NOMEMORY;
 
     // Get another iterator of the set to write the items
     PyObject *iter = PyObject_GetIter(value);
@@ -919,16 +1193,52 @@ static inline StatusCode from_set_frozenset(ValueData *vd, PyObject *value, int 
         // Get the item from the iterator
         PyObject *item = PyIter_Next(iter);
         // Write it to the valuedata and get the status
-        int status = from_any_value(vd, item);
-
+        StatusCode status = from_any_value(vd, item);
         Py_DECREF(item);
 
         // Return the status code if it's not success
         if (status != SC_SUCCESS) return status;
     }
 
+    Py_DECREF(iter);
+
     // Decrement the nest depth
     vd->nests--;
+
+    return SC_SUCCESS;
+}
+
+static inline StatusCode from_namedtuple(ValueData *vd, PyObject *value)
+{
+    // Get the fields of the namedtuple
+    PyObject *fields = PyObject_GetAttrString(value, "_fields");
+
+    // Get the number of fields
+    Py_ssize_t num_items = PyTuple_Size(fields);
+
+    // Write the metadata
+    if (write_E12D(vd, num_items, NULL, NTUPLE_E) == SC_NOMEMORY) return SC_NOMEMORY;
+
+    // Get the name of the module
+    PyObject *name = PyObject_GetAttrString((PyObject *)Py_TYPE(value), "__name__");
+
+    // Write the name of the module
+    StatusCode status;
+    if ((status = from_string(vd, name)) != SC_SUCCESS) return status;
+    Py_DECREF(name);
+
+    // Iterate over the fields
+    for (Py_ssize_t i = 0; i < num_items; i++)
+    {
+        // Get the field name
+        PyObject *name = PyTuple_GET_ITEM(fields, i);
+        // Get the field item
+        PyObject *item = PyTuple_GET_ITEM(value, i);
+
+        // Write them to the bytes stack
+        if ((status = from_string(vd, name)) != SC_SUCCESS) return status;
+        if ((status = from_any_value(vd, item)) != SC_SUCCESS) return status;
+    }
 
     return SC_SUCCESS;
 }
@@ -941,6 +1251,7 @@ static inline StatusCode from_dict(ValueData *vd, PyObject *value)
       dict in the order of 'key1, value1, key2, value2, etc..'.
 
     */
+
     if (!PyDict_Check(value)) return SC_INCORRECT;
     
     // Increment the nest depth and return if it's too deep
@@ -953,25 +1264,25 @@ static inline StatusCode from_dict(ValueData *vd, PyObject *value)
     if (write_E12D(vd, num_pairs, NULL, DICT_E) == SC_NOMEMORY) return SC_NOMEMORY;
 
     // Get the items of the dict in a list
-    PyObject *iterable = PyDict_Items(value);
+    PyObject *iter = PyDict_Items(value);
 
     // Go over all items in the dict
     for (Py_ssize_t i = 0; i < num_pairs; i++)
     {
         // Get the pair of the items, which is a tuple with the key on 0 and value on 1
-        PyObject *pair = PyList_GET_ITEM(iterable, i);
+        PyObject *pair = PyList_GET_ITEM(iter, i);
 
         // Get the key and item from the pair tuple
         PyObject *key = PyTuple_GET_ITEM(pair, 0);
         PyObject *item = PyTuple_GET_ITEM(pair, 1);
 
         // Write the key and item
-        int status_key = from_any_value(vd, key);
-        if (status_key != SC_SUCCESS) return status_key;
-        
-        int status_item = from_any_value(vd, item);
-        if (status_item != SC_SUCCESS) return status_item;
+        StatusCode status;
+        if ((status = from_any_value(vd, key)) != SC_SUCCESS) return status;
+        if ((status = from_any_value(vd, item)) != SC_SUCCESS) return status;
     }
+
+    Py_DECREF(iter);
 
     // Decrement the nest depth
     vd->nests--;
@@ -983,69 +1294,105 @@ static inline StatusCode from_dict(ValueData *vd, PyObject *value)
 
 static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
 {
-    // Get the datatype of the value
-    const char *datatype = Py_TYPE(value)->tp_name;
-    // Get the first character of the datatype
-    const char datachar = *datatype;
+    // Check for special types that stand under tuples and types
+    if (PyTuple_Check(value))
+    {
+        // Check if it's an actual tuple
+        if (PyTuple_CheckExact(value))
+            return from_tuple(vd, value);
+        
+        // Check if it has the fields attribute of a namedtuple
+        else if (PyObject_HasAttrString(value, "_fields"))
+            return from_namedtuple(vd, value);
+        
+        // Unsupported tuple type
+        else return SC_UNSUPPORTED;
+    }
+    else if (PyType_Check(value))
+    {
+        // Types are not supported, but might be later
+        return SC_UNSUPPORTED;
+    }
+    else
+    {
+        // Get the datatype of the value
+        const char *datatype = Py_TYPE(value)->tp_name;
+        // Get the first character of the datatype
+        const char datachar = *datatype;
 
-    switch (datachar)
-    {
-    case 's': // String | Set
-    {
-        // Check the 2nd character
-        switch (datatype[1])
+        switch (datachar)
         {
-        case 't': return from_string(vd, value);
-        case 'e': return from_set_frozenset(vd, value, 0);
-        default:  return SC_INCORRECT;
-        }
-    }
-    case 'i': return from_integer(vd, value);
-    case 'f':
-    {
-        switch (datatype[1])
+        case 's': // String | Set
         {
-        case 'l': return from_float(vd, value);
-        case 'r': return from_set_frozenset(vd, value, 1);
-        }
-    }
-    return from_float(vd, value);
-    case 'c': return from_complex(vd, value);
-    case 'b': // Boolean | bytes | bytearray (all start with a 'b')
-    {
-        // Check the 2nd datachar
-        switch (datatype[1])
-        {
-        case 'o': return from_boolean(vd, value);
-        default:
-        {
-            // Check the 5th datachar because the 2nd, 3rd, and 4th are the same
-            switch (datatype[4])
+            // Check the 2nd character
+            switch (datatype[1])
             {
-            case 's': return from_bytes(vd, value);
-            case 'a': return from_bytearray(vd, value);
+            case 't': return from_string(vd, value);
+            case 'e': return from_iterable(vd, value, SET_E);
             default:  return SC_INCORRECT;
             }
         }
-        }
-    }
-    case 'N': return from_static_value(vd, NONE_S);
-    case 'e': return from_static_value(vd, ELLIPSIS_S);
-    case 'd': // DateTime objects | Decimal | Dict
-    {
-        switch (datatype[1])
+        case 'i': return from_integer(vd, value);
+        case 'f':
         {
-        case 'a': return from_datetime(vd, value, datatype);
-        case 'e': return from_decimal(vd, value);
-        case 'i': return from_dict(vd, value);
-        default:  return SC_INCORRECT;
+            switch (datatype[1])
+            {
+            case 'l': return from_float(vd, value);
+            case 'r': return from_iterable(vd, value, FSET_E);
+            }
         }
-    }
-    case 'U': return from_uuid(vd, value);
-    case 'm': return from_memoryview(vd, value);
-    case 'l': return from_list(vd, value);
-    case 't': return from_tuple(vd, value);
-    default:  return SC_INCORRECT;
+        return from_float(vd, value);
+        case 'c': // Complex | Collections types
+        {
+            // Check if the datatype starts with 'collections'
+            if (strncmp(datatype, "collections.", strlen("collections.")) == 0)
+            {
+                // It's an item from the collections module. Switch over the first character that comes after the "collections." (idx 12)
+                const char new_datachar = datatype[12];
+                switch (new_datachar)
+                {
+                case 'd': return from_iterable(vd, value, DEQUE_E);
+                default:  return SC_UNSUPPORTED;
+                }
+            }
+            else return from_complex(vd, value);
+        }
+        case 'b': // Boolean | bytes | bytearray (all start with a 'b')
+        {
+            // Check the 2nd datachar
+            switch (datatype[1])
+            {
+            case 'o': return from_boolean(vd, value);
+            default:
+            {
+                // Check the 5th datachar because the 2nd, 3rd, and 4th are the same
+                switch (datatype[4])
+                {
+                case 's': return from_bytes(vd, value);
+                case 'a': return from_bytearray(vd, value);
+                default:  return SC_INCORRECT;
+                }
+            }
+            }
+        }
+        case 'N': return from_static_value(vd, NONE_S);
+        case 'e': return from_static_value(vd, ELLIPSIS_S);
+        case 'd': // DateTime objects | Decimal | Dict
+        {
+            switch (datatype[1])
+            {
+            case 'a': return from_datetime(vd, value, datatype);
+            case 'e': return from_decimal(vd, value);
+            case 'i': return from_dict(vd, value);
+            default:  return SC_INCORRECT;
+            }
+        }
+        case 'U': return from_uuid(vd, value);
+        case 'm': return from_memoryview(vd, value);
+        case 'l': return from_list(vd, value);
+        case 'r': return from_range(vd, value);
+        default:  return SC_UNSUPPORTED;
+        }
     }
 }
 
@@ -1082,28 +1429,30 @@ PyObject *from_value(PyObject *value)
         {
             // Incorrect datatype, likely an unsupported one
             PyErr_SetString(PyExc_ValueError, "Received an unsupported datatype.");
-            return NULL;
+            break;
         }
-        case SC_EXCEPTION: return NULL; // Error already set
         case SC_NESTDEPTH:
         {
             // Exceeded the maximum nest depth
             PyErr_SetString(PyExc_ValueError, "Exceeded the maximum value nest depth.");
-            return NULL;
+            break;
         }
         case SC_NOMEMORY:
         {
             // Not enough memory
             PyErr_SetString(PyExc_MemoryError, "Not enough memory space available for use.");
-            return NULL;
+            break;
         }
+        case SC_EXCEPTION: break; // Error message is set by the returner
         default:
         {
             // Something unknown went wrong
             PyErr_SetString(PyExc_RuntimeError, "Something unexpected went wrong, and we couldn't quite catch what it was.");
-            return NULL;
+            break;
         }
         }
+
+        return NULL;
     }
 }
 
@@ -1143,7 +1492,42 @@ static inline int ensure_offset(ByteData *bd, size_t jump)
     }
 }
 
+// Function for getting the size byte length of the dynamic 1 method
+static inline size_t D1_length(ByteData *bd)
+{
+    // Ensure offset for the first size byte
+    if (ensure_offset(bd, 1) == -1) return 0;
+
+    // Get the length of the length bytes from the 1st character away from the offset
+    size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
+    return size_bytes_length;
+}
+
+// Function for getting the size byte length of the dynamic 2 method
+static inline size_t D2_length(ByteData *bd)
+{
+    // Ensure offset for the first size byte
+    if (ensure_offset(bd, 1) == -1) return 0;
+
+    // Get the length of the length of the length bytes (sounds complicated, but explained in 'write_E12D' function)
+    size_t length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
+
+    // Ensure the offset for the 2nd size bytes
+    if (ensure_offset(bd, length) == -1) return 0;
+
+    // Get the length of the length bytes
+    size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), length);
+
+    // Update the offset to start at the value bytes
+    bd->offset += length - 1;
+
+    return size_bytes_length;
+}
+
 // # The to-conversion functions
+
+// Pre-definition of the global conversion function to use it in to-conversion functions
+static inline PyObject *to_any_value(ByteData *bd);
 
 static inline PyObject *to_str_e(ByteData *bd) // bd is short for bytedata
 {
@@ -1415,10 +1799,28 @@ static inline PyObject *to_decimal_gen(ByteData *bd, size_t size_bytes_length)
     return decimal;
 }
 
-// # The list type conversion functions and their helper functions
+static inline PyObject *to_range_s(ByteData *bd)
+{
+    // Increment the offset by 1 for the datachar
+    bd->offset++;
 
-// Pre-definition of the global conversion function to use it in list type functions
-static inline PyObject *to_any_value(ByteData *bd);
+    // Get the Python integers that represent the start, stop, and step
+    PyObject *start = to_any_value(bd);
+    PyObject *stop  = to_any_value(bd);
+    PyObject *step  = to_any_value(bd);
+
+    // Create a range object with the attributes by calling the range class
+    PyObject *range = PyObject_CallFunction((PyObject *)&PyRange_Type, "OOO", start, stop, step);
+
+    // Decref the numbers we created as they're no longer necessary
+    Py_DECREF(start);
+    Py_DECREF(stop);
+    Py_DECREF(step);
+
+    return range;
+}
+
+// # The list type conversion functions and their helper functions
 
 static inline PyObject *to_list_e(ByteData *bd)
 {
@@ -1501,8 +1903,8 @@ static inline PyObject *to_tuple_gen(ByteData *bd, size_t size_bytes_length)
     return tuple;
 }
 
-// This function can be used for both regular and frozen sets
-static inline PyObject *to_set_frozenset_e(ByteData *bd, int is_frozenset)
+// This function is used for the values also converted with the 'from_iterable' function
+static inline PyObject *to_iterable_e(ByteData *bd, const unsigned char empty) // Use the empty datachar to get the datatype
 {
     if (ensure_offset(bd, 1) == -1) return NULL;
 
@@ -1511,15 +1913,40 @@ static inline PyObject *to_set_frozenset_e(ByteData *bd, int is_frozenset)
     // Create an empty list to create the set out of
     PyObject *empty_list = PyList_New(0);
 
-    // Create the correct set type out of the empty list
-    PyObject *set_type =  is_frozenset == 0 ? PySet_New(empty_list) : PyFrozenSet_New(empty_list);
+    // This will hold the iterable type
+    PyObject *iter;
+
+    // Switch over the empty datachar to get which datatype it is
+    switch (empty)
+    {
+    case SET_E:
+    {
+        iter = PySet_New(empty_list);
+        break;
+    }
+    case FSET_E:
+    {
+        iter = PyFrozenSet_New(empty_list);
+        break;
+    }
+    case DEQUE_E:
+    {
+        iter = PyObject_CallFunction(deque_cl, "O", empty_list);
+        break;
+    }
+    default: // Shouldn't be reached, but just to be sure
+    {
+        PyErr_SetString(PyExc_RuntimeError, "Unexpectedly received an invalid iterable character.");
+        return NULL;
+    }
+    }
 
     Py_DECREF(empty_list);
-    return set_type;
+    return iter;
 }
 
-// Also for both regular and frozen sets
-static inline PyObject *to_set_frozenset_gen(ByteData *bd, size_t size_bytes_length, int is_frozenset)
+// Same as the function above but for non-empty iterables
+static inline PyObject *to_iterable_gen(ByteData *bd, size_t size_bytes_length, const unsigned char empty)
 {
     // No need to ensure the offset, that'll happen in the list function
 
@@ -1532,11 +1959,36 @@ static inline PyObject *to_set_frozenset_gen(ByteData *bd, size_t size_bytes_len
         return NULL;
     }
     
-    // Create the set type out of the created list
-    PyObject *set_type =  is_frozenset == 0 ? PySet_New(list) : PyFrozenSet_New(list);
+    // This will hold the iterable type
+    PyObject *iter;
+
+    // Switch over the empty datachar to get which datatype it is
+    switch (empty)
+    {
+    case SET_E:
+    {
+        iter = PySet_New(list);
+        break;
+    }
+    case FSET_E:
+    {
+        iter = PyFrozenSet_New(list);
+        break;
+    }
+    case DEQUE_E:
+    {
+        iter = PyObject_CallFunction(deque_cl, "O", list);
+        break;
+    }
+    default: // Shouldn't be reached, but just to be sure
+    {
+        PyErr_SetString(PyExc_RuntimeError, "Unexpectedly received an invalid iterable character.");
+        return NULL;
+    }
+    }
 
     Py_DECREF(list);
-    return set_type;
+    return iter;
 }
 
 static inline PyObject *to_dict_e(ByteData *bd)
@@ -1578,9 +2030,94 @@ static inline PyObject *to_dict_gen(ByteData *bd, size_t size_bytes_length)
 
         // Place the key-value pair in the dict
         PyDict_SetItem(dict, key, value);
+
+        Py_DECREF(key);
+        Py_DECREF(value);
     }
 
     return dict;
+}
+
+/*
+  The to-namedtuple functions seem to have some issues and are rather slow.
+  These will be reworked soon, and because they sometimes appear a bit
+  unstable, they will not be available until fixed.
+
+  TODO: Rework the to-namedtuple functions.
+
+*/
+
+static inline PyObject *to_namedtuple_e(ByteData *bd)
+{
+    if (ensure_offset(bd, 1) == -1) return NULL;
+
+    // Increment over the datachar
+    bd->offset++;
+
+    // Get the name of the namedtuple
+    PyObject *name = to_any_value(bd);
+    if (name == NULL) return NULL; // Error already set
+
+    // Create an empty tuple to initialize the empty namedtuple with
+    PyObject *empty_tuple = PyTuple_New(0);
+
+    // Create the namedtuple type
+    PyObject *nt_type = PyObject_CallFunction(namedtuple_cl, "OO", name, empty_tuple);
+    // Create the namedtuple using that type
+    PyObject *namedtuple = PyObject_CallObject(nt_type, empty_tuple);
+
+    Py_DECREF(name);
+    Py_DECREF(empty_tuple);
+    Py_DECREF(nt_type);
+
+    return namedtuple;
+}
+
+static inline PyObject *to_namedtuple_gen(ByteData *bd, size_t size_bytes_length)
+{
+    if (ensure_offset(bd, size_bytes_length + 1) == -1) return NULL;
+
+    // Get the number of items
+    size_t num_items = bytes_to_size_t(&(bd->bytes[++bd->offset]), size_bytes_length);
+    bd->offset += size_bytes_length;
+
+    // Get the name of the namedtuple
+    PyObject *name = to_any_value(bd);
+    if (name == NULL) return NULL; // Error already set
+
+    // Go over the pairs and get the fields and items
+    PyObject *fields = PyTuple_New(num_items);
+    PyObject *items = PyTuple_New(num_items);
+    for (Py_ssize_t i = 0; i < (Py_ssize_t)num_items; i++)
+    {
+        // Get the field and item
+        PyObject *field = to_any_value(bd);
+        PyObject *item = to_any_value(bd);
+
+        if (field == NULL || item == NULL)
+        {
+            Py_XDECREF(field);
+            Py_XDECREF(item);
+            // Error already set
+            return NULL;
+        }
+
+        // Set the field and item
+        PyTuple_SetItem(fields, i, field);
+        PyTuple_SetItem(items, i, item);
+    }
+
+    // Create the namedtuple type
+    PyObject *nt_type = PyObject_CallFunction(namedtuple_cl, "OO", name, fields);
+    // Create the namedtuple using that type
+    PyObject *namedtuple = PyObject_CallObject(nt_type, items);
+
+    Py_DECREF(name);
+    Py_DECREF(fields);
+    Py_DECREF(items);
+    Py_DECREF(nt_type);
+
+    return namedtuple;
 }
 
 static inline PyObject *to_any_value(ByteData *bd)
@@ -1593,19 +2130,32 @@ static inline PyObject *to_any_value(ByteData *bd)
     case STR_E: return to_str_e(bd);
     case STR_1: return to_str_gen(bd, 1);
     case STR_2: return to_str_gen(bd, 2);
-    case STR_D:
+    case STR_D1:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
-
-        // Get the length of the length bytes from the 1st character away from the offset
-        size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-        // Use and return the generic to_str method
+        // Get the size bytes length for the dynamic 1 method
+        size_t size_bytes_length = D1_length(bd);
+        // Return NULL if the length is zero, indicating failure
+        if (size_bytes_length == 0) return NULL;
+        // Call the generic function with the size bytes length
         return to_str_gen(bd, size_bytes_length);
     }
+    case STR_D2:
+    {
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_str_gen(bd, size_bytes_length);
+    }
+    case INT_1: return to_int_gen(bd, 1);
+    case INT_2: return to_int_gen(bd, 2);
+    case INT_3: return to_int_gen(bd, 3);
+    case INT_4: return to_int_gen(bd, 4);
+    case INT_5: return to_int_gen(bd, 5);
     case INT_D1:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
+        // The integers dynamic 1 method is a bit different with a single byte size, so do it directly
 
+        // Ensure the offset for the size byte
+        if (ensure_offset(bd, 1) == -1) return NULL;
         // Get the length of the item bytes
         size_t length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
         // Use and return the generic to_int method
@@ -1613,48 +2163,45 @@ static inline PyObject *to_any_value(ByteData *bd)
     }
     case INT_D2:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
-
-        // Get the length of the item bytes
-        size_t length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-        // Increment once more to start at the int value bytes
-        bd->offset++;
-        // Use and return the generic to_int method
-        return to_int_gen(bd, length);
+        // The size bytes length can be received using the dynamic 2 function, so use that
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_int_gen(bd, size_bytes_length);
     }
-    case INT_1:       return to_int_gen(bd, 1);
-    case INT_2:       return to_int_gen(bd, 2);
-    case INT_3:       return to_int_gen(bd, 3);
-    case INT_4:       return to_int_gen(bd, 4);
-    case INT_5:       return to_int_gen(bd, 5);
-    case FLOAT_S:     return to_float_s(bd);
-    case BOOL_T:      return to_bool_gen(bd, Py_True);
-    case BOOL_F:      return to_bool_gen(bd, Py_False);
-    case COMPLEX_S:   return to_complex_s(bd);
-    case NONE_S:      return to_none_s(bd);
-    case ELLIPSIS_S:  return to_ellipsis_s(bd);
-    case BYTES_E:     return to_bytes_e(bd, 0);
-    case BYTES_1:     return to_bytes_gen(bd, 1, 0);
-    case BYTES_2:     return to_bytes_gen(bd, 2, 0);
-    case BYTES_D:
+    case FLOAT_S:    return to_float_s(bd);
+    case BOOL_T:     return to_bool_gen(bd, Py_True);
+    case BOOL_F:     return to_bool_gen(bd, Py_False);
+    case COMPLEX_S:  return to_complex_s(bd);
+    case NONE_S:     return to_none_s(bd);
+    case ELLIPSIS_S: return to_ellipsis_s(bd);
+    case BYTES_E:    return to_bytes_e(bd, 0);
+    case BYTES_1:    return to_bytes_gen(bd, 1, 0);
+    case BYTES_2:    return to_bytes_gen(bd, 2, 0);
+    case BYTES_D1:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
-
-        // Get the length of the length bytes from the 1st character away from the offset
-        size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-        // Use and return the generic method
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
         return to_bytes_gen(bd, size_bytes_length, 0);
     }
-    case BYTEARR_E:   return to_bytes_e(bd, 1);
-    case BYTEARR_1:   return to_bytes_gen(bd, 1, 1);
-    case BYTEARR_2:   return to_bytes_gen(bd, 2, 1);
-    case BYTEARR_D:
+    case BYTES_D2:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
-
-        // Get the length of the length bytes from the 1st character away from the offset
-        size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-        // Use and return the generic method
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_bytes_gen(bd, size_bytes_length, 0);
+    }
+    case BYTEARR_E: return to_bytes_e(bd, 1);
+    case BYTEARR_1: return to_bytes_gen(bd, 1, 1);
+    case BYTEARR_2: return to_bytes_gen(bd, 2, 1);
+    case BYTEARR_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_bytes_gen(bd, size_bytes_length, 1);
+    }
+    case BYTEARR_D2:
+    {
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
         return to_bytes_gen(bd, size_bytes_length, 1);
     }
     case DATETIME_DT: return to_datetime_gen(bd, datetime_dt);
@@ -1665,80 +2212,137 @@ static inline PyObject *to_any_value(ByteData *bd)
     case MEMVIEW_E:   return to_memoryview_e(bd);
     case MEMVIEW_1:   return to_memoryview_gen(bd, 1);
     case MEMVIEW_2:   return to_memoryview_gen(bd, 2);
-    case MEMVIEW_D:
+    case MEMVIEW_D1:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
-
-        // Get the size of the size bytes
-        size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-        // Use and return the generic method
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
         return to_memoryview_gen(bd, size_bytes_length);
     }
-    case DECIMAL_1:   return to_decimal_gen(bd, 1);
-    case DECIMAL_2:   return to_decimal_gen(bd, 2);
-    case DECIMAL_D:
+    case MEMVIEW_D2:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
-
-        // Get the size of the size bytes
-        size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-        // Use and return the generic method
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_memoryview_gen(bd, size_bytes_length);
+    }
+    case DECIMAL_1: return to_decimal_gen(bd, 1);
+    case DECIMAL_2: return to_decimal_gen(bd, 2);
+    case DECIMAL_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
         return to_decimal_gen(bd, size_bytes_length);
     }
-    case LIST_E:      return to_list_e(bd);
-    case LIST_1:      return to_list_gen(bd, 1);
-    case LIST_2:      return to_list_gen(bd, 2);
-    case LIST_D:
+    case DECIMAL_D2:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
-
-        size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-        // Use and return the generic method
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_decimal_gen(bd, size_bytes_length);
+    }
+    case LIST_E: return to_list_e(bd);
+    case LIST_1: return to_list_gen(bd, 1);
+    case LIST_2: return to_list_gen(bd, 2);
+    case LIST_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
         return to_list_gen(bd, size_bytes_length);
     }
-    case TUPLE_E:     return to_tuple_e(bd);
-    case TUPLE_1:     return to_tuple_gen(bd, 1);
-    case TUPLE_2:     return to_tuple_gen(bd, 2);
-    case TUPLE_D:
+    case LIST_D2:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
-
-        size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-        // Use and return the generic method
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_list_gen(bd, size_bytes_length);
+    }
+    case TUPLE_E: return to_tuple_e(bd);
+    case TUPLE_1: return to_tuple_gen(bd, 1);
+    case TUPLE_2: return to_tuple_gen(bd, 2);
+    case TUPLE_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
         return to_tuple_gen(bd, size_bytes_length);
     }
-    case SET_E:       return to_set_frozenset_e(bd, 0);
-    case SET_1:       return to_set_frozenset_gen(bd, 1, 0);
-    case SET_2:       return to_set_frozenset_gen(bd, 2, 0);
-    case SET_D:
+    case TUPLE_D2:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
-
-        size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-        // Use and return the generic method
-        return to_set_frozenset_gen(bd, size_bytes_length, 0);
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_tuple_gen(bd, size_bytes_length);
     }
-    case FSET_E:      return to_set_frozenset_e(bd, 1);
-    case FSET_1:      return to_set_frozenset_gen(bd, 1, 1);
-    case FSET_2:      return to_set_frozenset_gen(bd, 2, 1);
-    case FSET_D:
+    case SET_E: return to_iterable_e(bd, SET_E);
+    case SET_1: return to_iterable_gen(bd, 1, SET_E);
+    case SET_2: return to_iterable_gen(bd, 2, SET_E);
+    case SET_D1:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
-
-        size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-        // Use and return the generic method
-        return to_set_frozenset_gen(bd, size_bytes_length, 1);
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_iterable_gen(bd, size_bytes_length, SET_E);
     }
-    case DICT_E:      return to_dict_e(bd);
-    case DICT_1:      return to_dict_gen(bd, 1);
-    case DICT_2:      return to_dict_gen(bd, 2);
-    case DICT_D:
+    case SET_D2:
     {
-        if (ensure_offset(bd, 1) == -1) return NULL;
-
-        size_t size_bytes_length = bytes_to_size_t(&(bd->bytes[++bd->offset]), 1);
-        // Use and return the generic method
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_iterable_gen(bd, size_bytes_length, SET_E);
+    }
+    case FSET_E: return to_iterable_e(bd, FSET_E);
+    case FSET_1: return to_iterable_gen(bd, 1, FSET_E);
+    case FSET_2: return to_iterable_gen(bd, 2, FSET_E);
+    case FSET_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_iterable_gen(bd, size_bytes_length, FSET_E);
+    }
+    case FSET_D2:
+    {
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_iterable_gen(bd, size_bytes_length, FSET_E);
+    }
+    case DICT_E: return to_dict_e(bd);
+    case DICT_1: return to_dict_gen(bd, 1);
+    case DICT_2: return to_dict_gen(bd, 2);
+    case DICT_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
         return to_dict_gen(bd, size_bytes_length);
+    }
+    case DICT_D2:
+    {
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_dict_gen(bd, size_bytes_length);
+    }
+    case RANGE_S: return to_range_s(bd);
+    case NTUPLE_E: return to_namedtuple_e(bd);
+    case NTUPLE_1: return to_namedtuple_gen(bd, 1);
+    case NTUPLE_2: return to_namedtuple_gen(bd, 2);
+    case NTUPLE_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_namedtuple_gen(bd, size_bytes_length);
+    }
+    case NTUPLE_D2:
+    {
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_namedtuple_gen(bd, size_bytes_length);
+    }
+    case DEQUE_E: return to_iterable_e(bd, DEQUE_E);
+    case DEQUE_1: return to_iterable_gen(bd, 1, DEQUE_E);
+    case DEQUE_2: return to_iterable_gen(bd, 2, DEQUE_E);
+    case DEQUE_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_iterable_gen(bd, size_bytes_length, DEQUE_E);
+    }
+    case DEQUE_D2:
+    {
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_iterable_gen(bd, size_bytes_length, DEQUE_E);
     }
     default:
     {
@@ -1762,7 +2366,7 @@ PyObject *to_value(PyObject *py_bytes)
     // Decide what to do based on the protocol version
     switch (protocol)
     {
-    case PROT_STD_D: // The default STD protocol
+    case PROT_SBS_D: // The default SBS protocol
     {
         // Get the length of this bytes object for memory allocation
         Py_ssize_t bytes_length = PyBytes_Size(py_bytes);
@@ -1793,21 +2397,10 @@ PyObject *to_value(PyObject *py_bytes)
         PyObject *result = to_any_value(bd);
         free((void *)(bd->bytes));
         free(bd);
-        
-        if (result == NULL)
-            return NULL;
 
         return result;
     }
-    /*
-      There aren't any other protocols currently. When there are, their
-      de-serialization method is found in a stripped down version of the
-      conversion file of that protocol, which is called 'to_value_protX'
-      where 'X' is the protocol version. This will be used as follows:
-
-      `case PROT_X: return to_value_protX(py_bytes);`
-
-    */
+    case PROT_1: return to_value_prot1(py_bytes);
     default: // Likely received an invalid bytes object
     {
         PyErr_Format(PyExc_ValueError, "Likely received an invalid bytes object: invalid protocol marker.");

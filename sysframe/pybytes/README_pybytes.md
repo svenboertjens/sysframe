@@ -33,6 +33,7 @@ It supports the following datatypes:
 - `uuid.UUID`
 - `memoryview`
 - `decimal.Decimal`
+- `range`
 
 
 An example on how to use these functions:

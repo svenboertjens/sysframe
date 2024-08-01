@@ -1,4 +1,5 @@
-#include "conversions.h"
+#include "sbs_2.h"
+#include "sbs_old/sbs_1.h"
 
 // # The python handles for from and to value calls
 
@@ -55,8 +56,8 @@ static PyMethodDef methods[] = {
 // Finalize the Python interpreter on exit
 void pybytes_module_cleanup(void *module)
 {
-    // Cleanup the conversions module
-    conversions_cleanup();
+    // Cleanup the SBS modules
+    sbs2_cleanup(); // Just the current one, the values to clean up are shared accross all SBS files
 
     // Close the Python interpreter
     Py_Finalize();
@@ -79,8 +80,9 @@ PyMODINIT_FUNC PyInit_pybytes(void)
     // Init the Python interpreter
     Py_Initialize();
 
-    // Init the conversions module
-    if (conversions_init() == -1) return NULL;
+    // Init the SBS modules
+    if (sbs2_init() == -1) return NULL; // Only the current SBS protocol can produce errors
+    sbs1_init();
 
     // Create and return this module
     return PyModule_Create(&pybytes);

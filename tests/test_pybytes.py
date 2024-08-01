@@ -1,6 +1,7 @@
 from unittest import TestCase, main
 import pybytes
 
+from collections import namedtuple, deque
 import datetime
 import decimal
 import uuid
@@ -48,13 +49,13 @@ class TestPybytes(TestCase):
     # Test the supported 'standard' values with edge cases
     def test_standard_edgecases(self):
         # String (large)
-        self.assertFromTo('Hello, world!' * 1000)
+        self.assertFromTo('Hello, world!' * 100000)
         
         # String (special characters)
         self.assertFromTo('\t\n!@#$%^&*()~`_+-=[]{}|",./<>?')
         
         # Integer (large)
-        self.assertFromTo(1^100)
+        self.assertFromTo(10**1000)
         
         # Float
         self.assertFromTo(-0.0)
@@ -63,13 +64,13 @@ class TestPybytes(TestCase):
         self.assertFromTo(0.000001j - 9999999)
         
         # Bytes (large)
-        self.assertFromTo(b'Hello, world!' * 1000)
+        self.assertFromTo(b'Hello, world!' * 100000)
         
         # Bytes (special characters)
         self.assertFromTo(b'\t\n!@#$%^&*()~`_+-=[]{}|",./<>?')
         
         # Bytearray (large)
-        self.assertFromTo(bytearray(b'Hello, world!' * 1000))
+        self.assertFromTo(bytearray(b'Hello, world!' * 100000))
         
         # Bytearray (special characters)
         self.assertFromTo(bytearray(b'\t\n!@#$%^&*()~`_+-=[]{}",./<>?'))
@@ -99,6 +100,15 @@ class TestPybytes(TestCase):
         
         # Memoryview
         self.assertFromTo(memoryview(b'Hello, world!'))
+        
+        # Range
+        self.assertFromTo(range(0, 100, 2))
+        
+        # Namedtuple
+        #self.assertFromTo(namedtuple('awesome_namedtuple', ['some', 'interesting', 'values'])('with', 'interesting', 'items'))
+        
+        # Deque
+        self.assertFromTo([1, 2, 3, 4, 5]);
     
     # Test the supported 'miscellaneous' (non-standard) values with edge cases
     def test_misc_edgecases(self):
@@ -121,9 +131,24 @@ class TestPybytes(TestCase):
         self.assertFromTo(memoryview(b'Hello, world!' * 1000))
         
         # Memoryview (special characters)
-        self.assertFromTo(memoryview(b'\t\n!@#$%^&*()~`_+-=[]{}|",./<>?' * 1000))
+        self.assertFromTo(memoryview(b'\t\n!@#$%^&*()~`_+-=[]{}|",./<>?' * 100000))
+        
+        # Range
+        self.assertFromTo(range(-1000000000000, 1000000000000, 1000000000))
+        
+        # Namedtuple (empty)
+        #self.assertFromTo(namedtuple('name_cant_be_empty', [])())
+        
+        # Namedtuple (nested)
+        #self.assertFromTo(namedtuple('hello', ['world'])(namedtuple('banana', ['woah'])('some_value')))
+        
+        # Deque (empty)
+        self.assertFromTo([]);
+        
+        # Deque (nested)
+        self.assertFromTo([deque([1, 2, 3, deque([4, 5, 6])])]);
     
-    # Test the supported list types (list, dict, tuple, set, frozenset) regularly
+    # Test the supported list types regularly
     def test_list_types_regular(self):
         # List
         self.assertFromTo([3.142, None, 'Hello, world!'])
@@ -167,7 +192,6 @@ class TestPybytes(TestCase):
         
         # Frozenset (empty)
         self.assertFromTo(frozenset())
-
 
 if __name__ == '__main__':
     main()

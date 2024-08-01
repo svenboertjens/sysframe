@@ -55,7 +55,8 @@ setup(
             'sysframe.pybytes.pybytes',
             sources=[
                 'sysframe/pybytes/pybytes.c',
-                'sysframe/pybytes/conversions.c'
+                'sysframe/pybytes/sbs_2.c',
+                'sysframe/pybytes/sbs_old/sbs_1.c',
             ],
             include_dirs=[
                 'sysframe/pybytes'
