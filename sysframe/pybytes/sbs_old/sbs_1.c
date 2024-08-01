@@ -8,7 +8,7 @@
 #include "sbs_2.h"
 
 /*
-  This is the STD protocol 1 file, stripped down for just to-conversions.
+  This is the SBS protocol 1 file, stripped down for just to-conversions.
   This file should not receive changes, as it's from an old protocol.
   
 */

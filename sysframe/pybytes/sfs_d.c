@@ -4,7 +4,8 @@
   # Quick note
 
   In this file and the explanation, terms may be used that are not
-  explained here. Those are explained in 'SBS_D.c'.
+  explained here. Those are explained in 'sbs_X.c' (X can vary, it
+  should be the file placed directly under sysframe/pybytes).
 
   Also, this protocol is not yet implemented. Still working on
   the SBS protocol.
