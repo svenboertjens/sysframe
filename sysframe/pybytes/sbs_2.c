@@ -1303,7 +1303,8 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
         
         // Check if it has the fields attribute of a namedtuple
         else if (PyObject_HasAttrString(value, "_fields"))
-            return from_namedtuple(vd, value);
+            //return from_namedtuple(vd, value);
+            return SC_UNSUPPORTED; // Temporarily unsupported
         
         // Unsupported tuple type
         else return SC_UNSUPPORTED;
