@@ -1,7 +1,7 @@
 from unittest import TestCase, main
 import pybytes
 
-from collections import namedtuple, deque
+from collections import namedtuple, deque, Counter
 import datetime
 import decimal
 import uuid
@@ -105,10 +105,13 @@ class TestPybytes(TestCase):
         self.assertFromTo(range(0, 100, 2))
         
         # Namedtuple
-        #self.assertFromTo(namedtuple('awesome_namedtuple', ['some', 'interesting', 'values'])('with', 'interesting', 'items'))
+        self.assertFromTo(namedtuple('awesome_namedtuple', ['some', 'interesting', 'values'])('with', 'interesting', 'items'))
         
         # Deque
         self.assertFromTo([1, 2, 3, 4, 5]);
+        
+        # Counter
+        self.assertFromTo(Counter('abcdeabcdabcaba'))
     
     # Test the supported 'miscellaneous' (non-standard) values with edge cases
     def test_misc_edgecases(self):
@@ -137,16 +140,19 @@ class TestPybytes(TestCase):
         self.assertFromTo(range(-1000000000000, 1000000000000, 1000000000))
         
         # Namedtuple (empty)
-        #self.assertFromTo(namedtuple('name_cant_be_empty', [])())
+        self.assertFromTo(namedtuple('name_cant_be_empty', [])())
         
         # Namedtuple (nested)
-        #self.assertFromTo(namedtuple('hello', ['world'])(namedtuple('banana', ['woah'])('some_value')))
+        self.assertFromTo(namedtuple('hello', ['world'])(namedtuple('banana', ['woah'])('some_value')))
         
         # Deque (empty)
         self.assertFromTo([]);
         
         # Deque (nested)
         self.assertFromTo([deque([1, 2, 3, deque([4, 5, 6])])]);
+        
+        # Counter (empty)
+        self.assertFromTo(Counter())
     
     # Test the supported list types regularly
     def test_list_types_regular(self):

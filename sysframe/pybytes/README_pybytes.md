@@ -36,7 +36,8 @@ It supports the following datatypes:
 - `range`
 - `collections`:
     * `deque`
-    * `namedtuple` (temporarily removed, will get reworked)
+    * `namedtuple`
+    * `Counter`
 
 
 An example on how to use these functions:

@@ -102,8 +102,6 @@
 
   The following datatypes are planned to be supported in the future:
 
-  - collections.namedtuple (needs rework due to issues)
-  - collections.Counter
   - collections.defaultdict
   - collections.ordereddict
   - pathlib.Path
@@ -248,6 +246,13 @@
 #define DEQUE_D1 76
 #define DEQUE_D2 77
 
+// Counter
+#define COUNTER_E  78
+#define COUNTER_1  79
+#define COUNTER_2  80
+#define COUNTER_D1 81
+#define COUNTER_D2 82
+
 // # Return status codes
 
 typedef enum {
@@ -280,6 +285,9 @@ PyObject *namedtuple_cl;
 
 // Deque module class
 PyObject *deque_cl;
+
+// Counter module class
+PyObject *counter_cl;
 
 // # Initialization and cleanup functions
 
@@ -381,6 +389,7 @@ int sbs2_init(void)
     // Get the required attributes
     namedtuple_cl = PyObject_GetAttrString(collections_m, "namedtuple");
     deque_cl = PyObject_GetAttrString(collections_m, "deque");
+    counter_cl = PyObject_GetAttrString(collections_m, "Counter");
 
     if (namedtuple_cl == NULL)
     {
@@ -392,13 +401,18 @@ int sbs2_init(void)
         PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'deque' in module 'collections'.");
         return -1;
     }
+    else if (counter_cl == NULL)
+    {
+        PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'Counter' in module 'collections'.");
+        return -1;
+    }
 
     return 1;
 }
 
 void sbs2_cleanup(void)
 {
-    // Decref all modules with XDECREF because they are NULL if not found
+    // Decref all modules with XDECREF as they're NULL when not found
     Py_XDECREF(datetime_dt);
     Py_XDECREF(datetime_d);
     Py_XDECREF(datetime_t);
@@ -406,6 +420,7 @@ void sbs2_cleanup(void)
     Py_XDECREF(decimal_cl);
     Py_XDECREF(namedtuple_cl);
     Py_XDECREF(deque_cl);
+    Py_XDECREF(counter_cl);
 }
 
 // # Helper functions for the from-conversion functions
@@ -1245,13 +1260,6 @@ static inline StatusCode from_namedtuple(ValueData *vd, PyObject *value)
 
 static inline StatusCode from_dict(ValueData *vd, PyObject *value)
 {
-    /*
-      A dict type is treated kind of as a list, but the difference
-      is that it uses dict datachars and places the items from the
-      dict in the order of 'key1, value1, key2, value2, etc..'.
-
-    */
-
     if (!PyDict_Check(value)) return SC_INCORRECT;
     
     // Increment the nest depth and return if it's too deep
@@ -1274,12 +1282,52 @@ static inline StatusCode from_dict(ValueData *vd, PyObject *value)
 
         // Get the key and item from the pair tuple
         PyObject *key = PyTuple_GET_ITEM(pair, 0);
-        PyObject *item = PyTuple_GET_ITEM(pair, 1);
+        PyObject *val = PyTuple_GET_ITEM(pair, 1);
 
         // Write the key and item
         StatusCode status;
         if ((status = from_any_value(vd, key)) != SC_SUCCESS) return status;
-        if ((status = from_any_value(vd, item)) != SC_SUCCESS) return status;
+        if ((status = from_any_value(vd, val)) != SC_SUCCESS) return status;
+    }
+
+    Py_DECREF(iter);
+
+    // Decrement the nest depth
+    vd->nests--;
+
+    return SC_SUCCESS;
+}
+
+static inline StatusCode from_counter(ValueData *vd, PyObject *value)
+{
+    if (!PyDict_Check(value)) return SC_INCORRECT;
+    
+    // Increment the nest depth and return if it's too deep
+    if (increment_nests(vd) == SC_NESTDEPTH) return SC_NESTDEPTH;
+
+    // Get the amount of item pairs in the dict
+    Py_ssize_t num_pairs = PyDict_Size(value);
+
+    // Write the metadata
+    if (write_E12D(vd, num_pairs, NULL, COUNTER_E) == SC_NOMEMORY) return SC_NOMEMORY;
+
+    // Get the items of the dict in a list
+    PyObject *iter = PyDict_Items(value);
+
+    // Go over all items in the dict
+    for (Py_ssize_t i = 0; i < num_pairs; i++)
+    {
+        // Get the items pair
+        PyObject *pair = PyList_GET_ITEM(iter, i);
+
+        // Get the key and value from the pair tuple
+        PyObject *key = PyTuple_GET_ITEM(pair, 0);
+        PyObject *val = PyTuple_GET_ITEM(pair, 1);
+
+        // Write the key and item
+        StatusCode status;
+        if ((status = from_any_value(vd, key)) != SC_SUCCESS) return status;
+        if ((status = from_integer(vd, val)) != SC_SUCCESS) return status; // The value can only be an integer in a counter
     }
 
     Py_DECREF(iter);
@@ -1303,8 +1351,7 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
         
         // Check if it has the fields attribute of a namedtuple
         else if (PyObject_HasAttrString(value, "_fields"))
-            //return from_namedtuple(vd, value);
-            return SC_UNSUPPORTED; // Temporarily unsupported
+            return from_namedtuple(vd, value);
         
         // Unsupported tuple type
         else return SC_UNSUPPORTED;
@@ -1392,6 +1439,7 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
         case 'm': return from_memoryview(vd, value);
         case 'l': return from_list(vd, value);
         case 'r': return from_range(vd, value);
+        case 'C': return from_counter(vd, value);
         default:  return SC_UNSUPPORTED;
         }
     }
@@ -1995,8 +2043,8 @@ static inline PyObject *to_iterable_gen(ByteData *bd, size_t size_bytes_length, 
 static inline PyObject *to_dict_e(ByteData *bd)
 {
     if (ensure_offset(bd, 1) == -1) return NULL;
-
     bd->offset++;
+
     // Create and return an empty dict object
     return PyDict_New();
 }
@@ -2009,7 +2057,7 @@ static inline PyObject *to_dict_gen(ByteData *bd, size_t size_bytes_length)
     size_t num_items = bytes_to_size_t(&(bd->bytes[++bd->offset]), size_bytes_length);
     bd->offset += size_bytes_length;
 
-    // Create a n empty dict object
+    // Create an empty dict object
     PyObject *dict = PyDict_New();
 
     // Go over each pair and add them to the dict
@@ -2039,14 +2087,56 @@ static inline PyObject *to_dict_gen(ByteData *bd, size_t size_bytes_length)
     return dict;
 }
 
-/*
-  The to-namedtuple functions seem to have some issues and are rather slow.
-  These will be reworked soon, and because they sometimes appear a bit
-  unstable, they will not be available until fixed.
+static inline PyObject *to_counter_e(ByteData *bd)
+{
+    if (ensure_offset(bd, 1) == -1) return NULL;
+    bd->offset++;
 
-  TODO: Rework the to-namedtuple functions.
+    // Create and return a new counter
+    return PyObject_CallObject(counter_cl, NULL);
+}
 
-*/
+static inline PyObject *to_counter_gen(ByteData *bd, size_t size_bytes_length)
+{
+    if (ensure_offset(bd, size_bytes_length + 1) == -1) return NULL;
+
+    // Get the number of pairs in the dict
+    size_t num_items = bytes_to_size_t(&(bd->bytes[++bd->offset]), size_bytes_length);
+    bd->offset += size_bytes_length;
+
+    // Create an empty dict
+    PyObject *dict = PyDict_New();
+
+    // Go over each pair and add them to the dict
+    for (size_t i = 0; i < num_items; i++)
+    {
+        // Create the key and the value, placed directly after each other
+        PyObject *key = to_any_value(bd);
+        PyObject *value = to_any_value(bd);
+
+        // Check if both items actually exist
+        if (key == NULL || value == NULL)
+        {
+            Py_DECREF(dict);
+            Py_XDECREF(key);
+            Py_XDECREF(value);
+            // The error message has already been set
+            return NULL;
+        }
+
+        // Place the key-value pair in the dict
+        PyDict_SetItem(dict, key, value);
+
+        Py_DECREF(key);
+        Py_DECREF(value);
+    }
+
+    // Create the counter out of the dict
+    PyObject *counter = PyObject_CallFunctionObjArgs(counter_cl, dict, NULL);
+    Py_DECREF(dict);
+
+    return counter;
+}
 
 static inline PyObject *to_namedtuple_e(ByteData *bd)
 {
@@ -2109,7 +2199,7 @@ static inline PyObject *to_namedtuple_gen(ByteData *bd, size_t size_bytes_length
     }
 
     // Create the namedtuple type
-    PyObject *nt_type = PyObject_CallFunction(namedtuple_cl, "OO", name, fields);
+    PyObject *nt_type = PyObject_CallFunctionObjArgs(namedtuple_cl, name, fields, NULL);
     // Create the namedtuple using that type
     PyObject *namedtuple = PyObject_CallObject(nt_type, items);
 
@@ -2344,6 +2434,21 @@ static inline PyObject *to_any_value(ByteData *bd)
         size_t size_bytes_length = D2_length(bd);
         if (size_bytes_length == 0) return NULL;
         return to_iterable_gen(bd, size_bytes_length, DEQUE_E);
+    }
+    case COUNTER_E: return to_counter_e(bd);
+    case COUNTER_1: return to_counter_gen(bd, 1);
+    case COUNTER_2: return to_counter_gen(bd, 2);
+    case COUNTER_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_counter_gen(bd, size_bytes_length);
+    }
+    case COUNTER_D2:
+    {
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_counter_gen(bd, size_bytes_length);
     }
     default:
     {
