@@ -20,7 +20,7 @@ Extension(
     'sysframe.membridge.membridge',
     sources=[
         'sysframe/membridge/membridge.c',
-        'sysframe/pybytes/conversions.c'
+        'sysframe/pybytes/sbs_2.c'
     ],
     include_dirs=[
         'sysframe/membridge',
@@ -31,7 +31,7 @@ Extension(
 
 setup(
     name="sysframe",
-    version="0.2.0",
+    version="0.2.1",
     
     author="Sven Boertjens",
     author_email="boertjens.sven@gmail.com",

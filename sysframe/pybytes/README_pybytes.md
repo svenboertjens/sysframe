@@ -38,6 +38,7 @@ It supports the following datatypes:
     * `deque`
     * `namedtuple`
     * `Counter`
+    * `OrderedDict`
 
 
 An example on how to use these functions:

@@ -102,8 +102,6 @@
 
   The following datatypes are planned to be supported in the future:
 
-  - collections.defaultdict
-  - collections.ordereddict
   - pathlib.Path
 
   Aside those specific datatypes, more datatypes from core libraries
@@ -253,6 +251,20 @@
 #define COUNTER_D1 81
 #define COUNTER_D2 82
 
+// OrderedDict
+#define ODICT_E  83
+#define ODICT_1  84
+#define ODICT_2  85
+#define ODICT_D1 86
+#define ODICT_D2 87
+
+// ChainMap
+#define CHAINMAP_E  88
+#define CHAINMAP_1  89
+#define CHAINMAP_2  90
+#define CHAINMAP_D1 91
+#define CHAINMAP_D2 92
+
 // # Return status codes
 
 typedef enum {
@@ -280,14 +292,12 @@ PyObject *uuid_cl;
 // Decimal module class
 PyObject *decimal_cl;
 
-// Namedtuple module class
+// Collections module classes
 PyObject *namedtuple_cl;
-
-// Deque module class
 PyObject *deque_cl;
-
-// Counter module class
 PyObject *counter_cl;
+PyObject *ordereddict_cl;
+PyObject *chainmap_cl;
 
 // # Initialization and cleanup functions
 
@@ -390,6 +400,8 @@ int sbs2_init(void)
     namedtuple_cl = PyObject_GetAttrString(collections_m, "namedtuple");
     deque_cl = PyObject_GetAttrString(collections_m, "deque");
     counter_cl = PyObject_GetAttrString(collections_m, "Counter");
+    ordereddict_cl = PyObject_GetAttrString(collections_m, "OrderedDict");
+    chainmap_cl = PyObject_GetAttrString(collections_m, "ChainMap");
 
     if (namedtuple_cl == NULL)
     {
@@ -404,6 +416,16 @@ int sbs2_init(void)
     else if (counter_cl == NULL)
     {
         PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'Counter' in module 'collections'.");
+        return -1;
+    }
+    else if (ordereddict_cl == NULL)
+    {
+        PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'OrderedDict' in module 'collections'.");
+        return -1;
+    }
+    else if (chainmap_cl == NULL)
+    {
+        PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'ChainMap' in module 'collections'.");
         return -1;
     }
 
@@ -421,6 +443,8 @@ void sbs2_cleanup(void)
     Py_XDECREF(namedtuple_cl);
     Py_XDECREF(deque_cl);
     Py_XDECREF(counter_cl);
+    Py_XDECREF(ordereddict_cl);
+    Py_XDECREF(chainmap_cl);
 }
 
 // # Helper functions for the from-conversion functions
@@ -1225,6 +1249,8 @@ static inline StatusCode from_iterable(ValueData *vd, PyObject *value, const uns
 
 static inline StatusCode from_namedtuple(ValueData *vd, PyObject *value)
 {
+    if (!PyObject_IsInstance(value, namedtuple_cl)) return SC_INCORRECT;
+    
     // Get the fields of the namedtuple
     PyObject *fields = PyObject_GetAttrString(value, "_fields");
 
@@ -1258,7 +1284,8 @@ static inline StatusCode from_namedtuple(ValueData *vd, PyObject *value)
     return SC_SUCCESS;
 }
 
-static inline StatusCode from_dict(ValueData *vd, PyObject *value)
+// This function works for any dict type, so also with collections.OrderedDict for example
+static inline StatusCode from_dict_type(ValueData *vd, PyObject *value, const unsigned char empty)
 {
     if (!PyDict_Check(value)) return SC_INCORRECT;
     
@@ -1269,7 +1296,7 @@ static inline StatusCode from_dict(ValueData *vd, PyObject *value)
     Py_ssize_t num_pairs = PyDict_Size(value);
 
     // Write the metadata
-    if (write_E12D(vd, num_pairs, NULL, DICT_E) == SC_NOMEMORY) return SC_NOMEMORY;
+    if (write_E12D(vd, num_pairs, NULL, empty) == SC_NOMEMORY) return SC_NOMEMORY;
 
     // Get the items of the dict in a list
     PyObject *iter = PyDict_Items(value);
@@ -1300,7 +1327,7 @@ static inline StatusCode from_dict(ValueData *vd, PyObject *value)
 
 static inline StatusCode from_counter(ValueData *vd, PyObject *value)
 {
-    if (!PyDict_Check(value)) return SC_INCORRECT;
+    if (!PyObject_IsInstance(value, counter_cl)) return SC_INCORRECT;
     
     // Increment the nest depth and return if it's too deep
     if (increment_nests(vd) == SC_NESTDEPTH) return SC_NESTDEPTH;
@@ -1338,6 +1365,37 @@ static inline StatusCode from_counter(ValueData *vd, PyObject *value)
     return SC_SUCCESS;
 }
 
+static inline StatusCode from_chainmap(ValueData *vd, PyObject *value)
+{
+    if (!PyObject_IsInstance(value, chainmap_cl)) return SC_INCORRECT;
+
+    // Increment the nest depth
+    if (increment_nests(vd) == SC_NESTDEPTH) return SC_NESTDEPTH;
+
+    // Get a list of the dicts in the chainmap
+    PyObject *maps = PyObject_GetAttrString(value, "maps");
+
+    // Get the number of items in the maps
+    Py_ssize_t num_items = PyList_Size(maps);
+    
+    // Write the metadata
+    StatusCode status;
+    if ((status = write_E12D(vd, num_items, NULL, CHAINMAP_E)) != SC_SUCCESS) return status;
+
+    // Go over the dicts in the list
+    for (Py_ssize_t i = 0; i < num_items; i++)
+    {
+        // Get the dict from the maps
+        PyObject *dict = PyList_GET_ITEM(maps, i);
+        // Write the dict
+        if ((status = from_dict_type(vd, dict, DICT_E)) != SC_SUCCESS) return status;
+    }
+
+    Py_DECREF(maps);
+    vd->nests--;
+    return SC_SUCCESS;
+}
+
 // # The main from-value conversion functions
 
 static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
@@ -1355,11 +1413,6 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
         
         // Unsupported tuple type
         else return SC_UNSUPPORTED;
-    }
-    else if (PyType_Check(value))
-    {
-        // Types are not supported, but might be later
-        return SC_UNSUPPORTED;
     }
     else
     {
@@ -1400,6 +1453,7 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
                 switch (new_datachar)
                 {
                 case 'd': return from_iterable(vd, value, DEQUE_E);
+                case 'O': return from_dict_type(vd, value, ODICT_E);
                 default:  return SC_UNSUPPORTED;
                 }
             }
@@ -1431,7 +1485,7 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
             {
             case 'a': return from_datetime(vd, value, datatype);
             case 'e': return from_decimal(vd, value);
-            case 'i': return from_dict(vd, value);
+            case 'i': return from_dict_type(vd, value, DICT_E);
             default:  return SC_INCORRECT;
             }
         }
@@ -1439,7 +1493,15 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
         case 'm': return from_memoryview(vd, value);
         case 'l': return from_list(vd, value);
         case 'r': return from_range(vd, value);
-        case 'C': return from_counter(vd, value);
+        case 'C':
+        {
+            switch (datatype[1])
+            {
+            case 'o': return from_counter(vd, value);
+            case 'h': return from_chainmap(vd, value);
+            default:  return SC_INCORRECT;
+            }
+        }
         default:  return SC_UNSUPPORTED;
         }
     }
@@ -2001,12 +2063,7 @@ static inline PyObject *to_iterable_gen(ByteData *bd, size_t size_bytes_length, 
 
     // A set is created out of a different iterable, so create a list and use that
     PyObject *list = to_list_gen(bd, size_bytes_length);
-    // Check if actually exists
-    if (list == NULL)
-    {
-        // Error message already set
-        return NULL;
-    }
+    if (list == NULL) return NULL;
     
     // This will hold the iterable type
     PyObject *iter;
@@ -2131,11 +2188,101 @@ static inline PyObject *to_counter_gen(ByteData *bd, size_t size_bytes_length)
         Py_DECREF(value);
     }
 
-    // Create the counter out of the dict
+    // Create the Counter out of the dict
     PyObject *counter = PyObject_CallFunctionObjArgs(counter_cl, dict, NULL);
     Py_DECREF(dict);
 
     return counter;
+}
+
+static inline PyObject *to_ordereddict_e(ByteData *bd)
+{
+    if (ensure_offset(bd, 1) == -1) return NULL;
+    bd->offset++;
+
+    // Create and return an empty OrderedDict object
+    return PyObject_CallObject(ordereddict_cl, NULL);
+}
+
+static inline PyObject *to_ordereddict_gen(ByteData *bd, size_t size_bytes_length)
+{
+    if (ensure_offset(bd, size_bytes_length + 1) == -1) return NULL;
+
+    // Get the number of pairs in the dict
+    size_t num_items = bytes_to_size_t(&(bd->bytes[++bd->offset]), size_bytes_length);
+    bd->offset += size_bytes_length;
+
+    // Create an empty dict
+    PyObject *dict = PyDict_New();
+
+    // Go over each pair and add them to the dict
+    for (size_t i = 0; i < num_items; i++)
+    {
+        // Create the key and the value, placed directly after each other
+        PyObject *key = to_any_value(bd);
+        PyObject *value = to_any_value(bd);
+
+        // Check if both items actually exist
+        if (key == NULL || value == NULL)
+        {
+            Py_DECREF(dict);
+            Py_XDECREF(key);
+            Py_XDECREF(value);
+            // The error message has already been set
+            return NULL;
+        }
+
+        // Place the key-value pair in the dict
+        PyDict_SetItem(dict, key, value);
+
+        Py_DECREF(key);
+        Py_DECREF(value);
+    }
+
+    // Create the OrderedDict out of the dict
+    PyObject *counter = PyObject_CallFunctionObjArgs(ordereddict_cl, dict, NULL);
+    Py_DECREF(dict);
+
+    return counter;
+}
+
+static inline PyObject *to_chainmap_e(ByteData *bd)
+{
+    if (ensure_offset(bd, 1) == -1) return NULL;
+    bd->offset++;
+
+    // Create and return an empty ChainMap object
+    return PyObject_CallObject(chainmap_cl, NULL);
+}
+
+static inline PyObject *to_chainmap_gen(ByteData *bd, size_t size_bytes_length)
+{
+    if (ensure_offset(bd, size_bytes_length + 1) == -1) return NULL;
+
+    // Get the number of maps in the ChainMap
+    size_t num_maps = bytes_to_size_t(&(bd->bytes[++bd->offset]), size_bytes_length);
+    bd->offset += size_bytes_length;
+
+    // This will hold the maps
+    PyObject *maps = PyTuple_New(num_maps);
+
+    for (size_t i = 0; i < num_maps; i++)
+    {
+        // Create the key and the value, placed directly after each other
+        PyObject *dict = to_any_value(bd);
+
+        // Check if both items actually exist
+        if (dict == NULL) return NULL;
+
+        // Place the dict into the maps tuple
+        PyTuple_SET_ITEM(maps, i, dict);
+    }
+
+    // Create the ChainMap out of the dict
+    PyObject *chainmap = PyObject_CallObject(chainmap_cl, maps);
+    Py_DECREF(maps);
+
+    return chainmap;
 }
 
 static inline PyObject *to_namedtuple_e(ByteData *bd)
@@ -2449,6 +2596,36 @@ static inline PyObject *to_any_value(ByteData *bd)
         size_t size_bytes_length = D2_length(bd);
         if (size_bytes_length == 0) return NULL;
         return to_counter_gen(bd, size_bytes_length);
+    }
+    case ODICT_E: return to_ordereddict_e(bd);
+    case ODICT_1: return to_ordereddict_gen(bd, 1);
+    case ODICT_2: return to_ordereddict_gen(bd, 2);
+    case ODICT_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_ordereddict_gen(bd, size_bytes_length);
+    }
+    case ODICT_D2:
+    {
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_ordereddict_gen(bd, size_bytes_length);
+    }
+    case CHAINMAP_E: return to_chainmap_e(bd);
+    case CHAINMAP_1: return to_chainmap_gen(bd, 1);
+    case CHAINMAP_2: return to_chainmap_gen(bd, 2);
+    case CHAINMAP_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_chainmap_gen(bd, size_bytes_length);
+    }
+    case CHAINMAP_D2:
+    {
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_chainmap_gen(bd, size_bytes_length);
     }
     default:
     {

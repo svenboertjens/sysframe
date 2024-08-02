@@ -1,7 +1,7 @@
 from unittest import TestCase, main
 import pybytes
 
-from collections import namedtuple, deque, Counter
+from collections import *
 import datetime
 import decimal
 import uuid
@@ -112,6 +112,12 @@ class TestPybytes(TestCase):
         
         # Counter
         self.assertFromTo(Counter('abcdeabcdabcaba'))
+        
+        # OrderedDict
+        self.assertFromTo(OrderedDict({'Hello': 'world!', 'some': 'key', 'value': 'pairs'}))
+        
+        # ChainMap
+        self.assertFromTo(ChainMap({'a': 2, 'b': 3}, {'b': 1, 'c': 4}))
     
     # Test the supported 'miscellaneous' (non-standard) values with edge cases
     def test_misc_edgecases(self):
@@ -153,6 +159,18 @@ class TestPybytes(TestCase):
         
         # Counter (empty)
         self.assertFromTo(Counter())
+        
+        # OrderedDict (empty)
+        self.assertFromTo(OrderedDict())
+        
+        # OrderedDict (nested)
+        self.assertFromTo(OrderedDict(OrderedDict(OrderedDict(OrderedDict(OrderedDict(OrderedDict(OrderedDict())))))))
+        
+        # ChainMap (empty)
+        self.assertFromTo(ChainMap())
+        
+        # ChainMap (nested)
+        self.assertFromTo(ChainMap(ChainMap({'a': 2, 'b': 3}, {'b': 1, 'c': 4}), ChainMap({'a': 2, 'b': 3}, {'b': 1, 'c': 4})))
     
     # Test the supported list types regularly
     def test_list_types_regular(self):
@@ -194,10 +212,9 @@ class TestPybytes(TestCase):
         # Set (empty)
         self.assertFromTo(set())
         
-        # Set and frozenset can't be nested, they're unhashable datatypes
-        
         # Frozenset (empty)
         self.assertFromTo(frozenset())
+
 
 if __name__ == '__main__':
     main()
