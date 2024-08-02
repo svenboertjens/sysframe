@@ -15,8 +15,7 @@ This framework currently consists of the following modules:
 - `pybytes`
 - `membridge`
 
-Explanations on how to use these modules are found in module-specific README files, such as `README_pybytes.md` for the `pybytes` module.
-For code-specific documentation, there aren't special README's for that. I've tried to explain each piece of code well enough using in-code comments.
+Explanations on how to use these modules are found in module-specific README files under the `documentation` folder.
 
 
 ## Modules
