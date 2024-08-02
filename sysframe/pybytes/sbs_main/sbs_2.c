@@ -4,7 +4,7 @@
 #include <datetime.h>
 #include <ctype.h>
 
-#include "sbs_old/sbs_1.h"
+#include "../sbs_old/sbs_1.h"
 #include "sbs_2.h"
 
 /*
