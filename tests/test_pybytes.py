@@ -10,9 +10,12 @@ import uuid
 class TestPybytes(TestCase):
     # Helper function to test encoding/decoding
     def assertFromTo(self, value):
-        bytes_obj = pybytes.from_value(value)
-        decoded = pybytes.to_value(bytes_obj)
-        self.assertEqual(value, decoded, f"Failed for value: {value}")
+        try:
+            bytes_obj = pybytes.from_value(value)
+            decoded = pybytes.to_value(bytes_obj)
+            self.assertEqual(value, decoded, f"Failed for value: {value}")
+        except:
+            self.fail(f"Error with value: {value}")
     
     # Test the supported 'standard' values regularly
     def test_standard_regular(self):
@@ -146,7 +149,7 @@ class TestPybytes(TestCase):
         self.assertFromTo(range(-1000000000000, 1000000000000, 1000000000))
         
         # Namedtuple (empty)
-        self.assertFromTo(namedtuple('name_cant_be_empty', [])())
+        self.assertFromTo(namedtuple('_', [])())
         
         # Namedtuple (nested)
         self.assertFromTo(namedtuple('hello', ['world'])(namedtuple('banana', ['woah'])('some_value')))

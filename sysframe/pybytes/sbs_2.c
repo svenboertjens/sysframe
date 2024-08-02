@@ -1249,8 +1249,6 @@ static inline StatusCode from_iterable(ValueData *vd, PyObject *value, const uns
 
 static inline StatusCode from_namedtuple(ValueData *vd, PyObject *value)
 {
-    if (!PyObject_IsInstance(value, namedtuple_cl)) return SC_INCORRECT;
-    
     // Get the fields of the namedtuple
     PyObject *fields = PyObject_GetAttrString(value, "_fields");
 
@@ -1385,10 +1383,10 @@ static inline StatusCode from_chainmap(ValueData *vd, PyObject *value)
     // Go over the dicts in the list
     for (Py_ssize_t i = 0; i < num_items; i++)
     {
-        // Get the dict from the maps
-        PyObject *dict = PyList_GET_ITEM(maps, i);
-        // Write the dict
-        if ((status = from_dict_type(vd, dict, DICT_E)) != SC_SUCCESS) return status;
+        // Get the item from the maps
+        PyObject *item = PyList_GET_ITEM(maps, i);
+        // Write the item
+        if ((status = from_any_value(vd, item)) != SC_SUCCESS) return status;
     }
 
     Py_DECREF(maps);
@@ -2260,22 +2258,20 @@ static inline PyObject *to_chainmap_gen(ByteData *bd, size_t size_bytes_length)
     if (ensure_offset(bd, size_bytes_length + 1) == -1) return NULL;
 
     // Get the number of maps in the ChainMap
-    size_t num_maps = bytes_to_size_t(&(bd->bytes[++bd->offset]), size_bytes_length);
+    size_t num_items = bytes_to_size_t(&(bd->bytes[++bd->offset]), size_bytes_length);
     bd->offset += size_bytes_length;
 
     // This will hold the maps
-    PyObject *maps = PyTuple_New(num_maps);
+    PyObject *maps = PyTuple_New(num_items);
 
-    for (size_t i = 0; i < num_maps; i++)
+    for (size_t i = 0; i < num_items; i++)
     {
-        // Create the key and the value, placed directly after each other
-        PyObject *dict = to_any_value(bd);
-
-        // Check if both items actually exist
-        if (dict == NULL) return NULL;
+        // Get the item of the current map
+        PyObject *item = to_any_value(bd);
+        if (item == NULL) return NULL;
 
         // Place the dict into the maps tuple
-        PyTuple_SET_ITEM(maps, i, dict);
+        PyTuple_SET_ITEM(maps, i, item);
     }
 
     // Create the ChainMap out of the dict

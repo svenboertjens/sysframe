@@ -31,7 +31,7 @@ Extension(
 
 setup(
     name="sysframe",
-    version="0.2.1",
+    version="0.2.2",
     
     author="Sven Boertjens",
     author_email="boertjens.sven@gmail.com",
