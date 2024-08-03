@@ -8,6 +8,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   build:
@@ -33,7 +34,7 @@ jobs:
 
     - name: Run tests
       run: |
-        unittest
+        python -m unittest discover
 
     - name: Build package
       run: |
@@ -51,5 +52,5 @@ jobs:
       if: success() && github.event_name == 'workflow_dispatch'
       run: |
         python -m pip install --upgrade twine
-        python -m twine upload dist/* -u ${{ __token__ }} -p ${{ secrets.PYPI_PASSWORD }}
+        python -m twine upload dist/* -u __token__ -p ${{ secrets.PYPI_PASSWORD }}
 
