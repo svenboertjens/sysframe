@@ -19,19 +19,19 @@ with open("README.md", "r") as fh:
 Extension(
     'sysframe.membridge.membridge',
     sources=[
-        '../sysframe/membridge/membridge.c',
-        '../sysframe/pybytes/sbs_2.c'
+        'sysframe/membridge/membridge.c',
+        'sysframe/pybytes/sbs_main/sbs_2.c'
     ],
     include_dirs=[
-        '../sysframe/membridge',
-        '../sysframe/pybytes'
+        'sysframe/membridge',
+        'sysframe/pybytes/sbs_main'
     ]
 )
 """
 
 setup(
     name="sysframe",
-    version="0.2.2",
+    version="0.2.3",
     
     author="Sven Boertjens",
     author_email="boertjens.sven@gmail.com",
@@ -54,12 +54,12 @@ setup(
         Extension(
             'sysframe.pybytes.pybytes',
             sources=[
-                '../sysframe/pybytes/pybytes.c',
-                '../sysframe/pybytes/sbs_2.c',
-                '../sysframe/pybytes/sbs_old/sbs_1.c',
+                'sysframe/pybytes/pybytes.c',
+                'sysframe/pybytes/sbs_main/sbs_2.c',
+                'sysframe/pybytes/sbs_old/sbs_1.c',
             ],
             include_dirs=[
-                '../sysframe/pybytes'
+                'sysframe/pybytes'
             ]
         ),
     ],

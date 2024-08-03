@@ -2,9 +2,112 @@ from unittest import TestCase, main
 import pybytes
 
 from collections import *
+from pathlib import Path, PurePath
 import datetime
 import decimal
 import uuid
+
+
+# A list with all values to test
+test_values = [
+    # Str
+    'Hello, world!',
+    '',
+    'Hello, world!' * 100000,
+    '\t\n!@#$%^&*()~`_+-=[]{}|",./<>?' * 100000,
+    # Int
+    12345,
+    10**1000,
+    -(10**1000),
+    0,
+    # Float
+    3.142,
+    0.0,
+    # Bool
+    True,
+    False,
+    # NoneType
+    None,
+    # Complex
+    2j + 3,
+    0.000001j - 9999999,
+    # Ellipsis
+    ...,
+    # Bytes
+    b'Hello, world!',
+    b'',
+    b'Hello, world!' * 100000,
+    b'\t\n!@#$%^&*()~`_+-=[]{}|",./<>?' * 100000,
+    # Bytearray
+    bytearray(b'Hello, world!'),
+    bytearray(b''),
+    bytearray(b'Hello, world!' * 100000),
+    bytearray(b'\t\n!@#$%^&*()~`_+-=[]{}|",./<>?' * 100000),
+    # Datetime
+    datetime.datetime(2008, 6, 8, 23, 53),
+    datetime.datetime(9999, 12, 31, 23, 59, 59, 999),
+    datetime.timedelta(5, 14, 12, 11, 43, 19, 2),
+    datetime.timedelta(6, 59, 999, 999, 59, 23, 51),
+    datetime.date(2008, 6, 8),
+    datetime.date(9999, 12, 31),
+    datetime.time(23, 53),
+    datetime.time(23, 59, 59, 999),
+    # Decimal
+    decimal.Decimal('3.1415926'),
+    decimal.Decimal('3.1415926535897932384626433832795028841971693993751058209749445923078164062862089986280348253421170679'),
+    # UUID
+    uuid.uuid1(),
+    uuid.uuid4(),
+    # Memoryview
+    memoryview(b'Hello, world!'),
+    memoryview(b'Hello, world!' * 100000),
+    memoryview(b'\t\n!@#$%^&*()~`_+-=[]{}|",./<>?' * 100000),
+    # Range
+    range(0, 100, 2),
+    range(-1000000000000, 1000000000000, 1000000000),
+    # Namedtuple
+    namedtuple('awesome_namedtuple', ['some', 'interesting', 'values'])('with', 'interesting', 'items'),
+    namedtuple('_', [])(),
+    namedtuple('hello', ['world'])(namedtuple('banana', ['woah'])('some_value')),
+    # Deque
+    deque([1, 2, 3, 4, 5]),
+    deque([]),
+    deque([deque([1, 2, 3, deque([4, 5, 6])])]),
+    # Counter
+    Counter('abcdeabcdabcaba'),
+    Counter(),
+    # OrderedDict
+    OrderedDict({'Hello': 'world!', 'some': 'key', 'value': 'pairs'}),
+    OrderedDict(),
+    OrderedDict(OrderedDict(OrderedDict(OrderedDict(OrderedDict(OrderedDict(OrderedDict())))))),
+    # ChainMap
+    ChainMap({'a': 2, 'b': 3}, {'b': 1, 'c': 4}),
+    ChainMap(ChainMap({'a': 2, 'b': 3}, {'b': 1, 'c': 4}), ChainMap({'a': 2, 'b': 3}, {'b': 1, 'c': 4})),
+    # List
+    [3.142, None, 'Hello, world!'],
+    [],
+    [[[[['Hello,', [[[]]], 'world!']]]]],
+    # Dict
+    {3.142: 'Hello, world!', True: False},
+    dict(),
+    {'Hello,': {'world!': {'This': {'is': {'deeply': {'nested!': {}}}}}}},
+    # Tuple
+    (9009, 'banananana'),
+    tuple(),
+    (((((((('All those commas...',),),),),),),),),
+    # Set
+    {'What is your favorite music genre?'},
+    set(),
+    # Frozenset
+    frozenset([3.142, None, 'Hello, world!']),
+    frozenset(),
+    # Path
+    Path(),
+    Path('/home/usr2/Pictures'),
+    # PurePath
+    PurePath(),
+    PurePath('/home/usr2/Downloads'),
+]
 
 
 class TestPybytes(TestCase):
@@ -17,207 +120,13 @@ class TestPybytes(TestCase):
         except:
             self.fail(f"Error with value: {value}")
     
-    # Test the supported 'standard' values regularly
-    def test_standard_regular(self):
-        # String
-        self.assertFromTo('Hello, world!')
+    def test_values(self):
+        # Test each value separately
+        for value in test_values:
+            self.assertFromTo(value)
         
-        # Integer
-        self.assertFromTo(12345)
-        
-        # Float
-        self.assertFromTo(3.142)
-        
-        # Bool (True)
-        self.assertFromTo(True)
-        
-        # Bool (False)
-        self.assertFromTo(False)
-        
-        # Complex
-        self.assertFromTo(2j + 3)
-        
-        # None
-        self.assertFromTo(None)
-        
-        # Ellipsis
-        self.assertFromTo(...)
-        
-        # Bytes
-        self.assertFromTo(b'Hello, world!')
-        
-        # Bytearray
-        self.assertFromTo(bytearray(b'Hello, world!'))
-    
-    # Test the supported 'standard' values with edge cases
-    def test_standard_edgecases(self):
-        # String (large)
-        self.assertFromTo('Hello, world!' * 100000)
-        
-        # String (special characters)
-        self.assertFromTo('\t\n!@#$%^&*()~`_+-=[]{}|",./<>?')
-        
-        # Integer (large)
-        self.assertFromTo(10**1000)
-        
-        # Float
-        self.assertFromTo(-0.0)
-        
-        # Complex
-        self.assertFromTo(0.000001j - 9999999)
-        
-        # Bytes (large)
-        self.assertFromTo(b'Hello, world!' * 100000)
-        
-        # Bytes (special characters)
-        self.assertFromTo(b'\t\n!@#$%^&*()~`_+-=[]{}|",./<>?')
-        
-        # Bytearray (large)
-        self.assertFromTo(bytearray(b'Hello, world!' * 100000))
-        
-        # Bytearray (special characters)
-        self.assertFromTo(bytearray(b'\t\n!@#$%^&*()~`_+-=[]{}",./<>?'))
-    
-    # Test the supported 'miscellaneous' (non-standard) values regularly
-    def test_misc_regular(self):
-        # Datetime (datetime)
-        self.assertFromTo(datetime.datetime(2008, 6, 8, 23, 53))
-        
-        # Datetime (timedelta)
-        self.assertFromTo(datetime.timedelta(5, 14, 12, 11, 43, 19, 2))
-        
-        # Datetime (date)
-        self.assertFromTo(datetime.date(2008, 6, 8))
-        
-        # Datetime (time)
-        self.assertFromTo(datetime.time(23, 53))
-        
-        # Decimal
-        self.assertFromTo(decimal.Decimal('3.1415926'))
-        
-        # UUID (1)
-        self.assertFromTo(uuid.uuid1())
-        
-        # UUID (4)
-        self.assertFromTo(uuid.uuid4())
-        
-        # Memoryview
-        self.assertFromTo(memoryview(b'Hello, world!'))
-        
-        # Range
-        self.assertFromTo(range(0, 100, 2))
-        
-        # Namedtuple
-        self.assertFromTo(namedtuple('awesome_namedtuple', ['some', 'interesting', 'values'])('with', 'interesting', 'items'))
-        
-        # Deque
-        self.assertFromTo([1, 2, 3, 4, 5]);
-        
-        # Counter
-        self.assertFromTo(Counter('abcdeabcdabcaba'))
-        
-        # OrderedDict
-        self.assertFromTo(OrderedDict({'Hello': 'world!', 'some': 'key', 'value': 'pairs'}))
-        
-        # ChainMap
-        self.assertFromTo(ChainMap({'a': 2, 'b': 3}, {'b': 1, 'c': 4}))
-    
-    # Test the supported 'miscellaneous' (non-standard) values with edge cases
-    def test_misc_edgecases(self):
-        # Datetime (datetime)
-        self.assertFromTo(datetime.datetime(9999, 12, 31, 23, 59, 59, 999))
-        
-        # Datetime (timedelta)
-        self.assertFromTo(datetime.timedelta(6, 59, 999, 999, 59, 23, 51))
-        
-        # Datetime (date)
-        self.assertFromTo(datetime.date(9999, 12, 31))
-        
-        # Datetime (time)
-        self.assertFromTo(datetime.time(23, 59, 59, 999))
-        
-        # Decimal (large)
-        self.assertFromTo(decimal.Decimal('3.1415926535897932384626433832795028841971693993751058209749445923078164062862089986280348253421170679'))
-        
-        # Memoryview (large)
-        self.assertFromTo(memoryview(b'Hello, world!' * 1000))
-        
-        # Memoryview (special characters)
-        self.assertFromTo(memoryview(b'\t\n!@#$%^&*()~`_+-=[]{}|",./<>?' * 100000))
-        
-        # Range
-        self.assertFromTo(range(-1000000000000, 1000000000000, 1000000000))
-        
-        # Namedtuple (empty)
-        self.assertFromTo(namedtuple('_', [])())
-        
-        # Namedtuple (nested)
-        self.assertFromTo(namedtuple('hello', ['world'])(namedtuple('banana', ['woah'])('some_value')))
-        
-        # Deque (empty)
-        self.assertFromTo([]);
-        
-        # Deque (nested)
-        self.assertFromTo([deque([1, 2, 3, deque([4, 5, 6])])]);
-        
-        # Counter (empty)
-        self.assertFromTo(Counter())
-        
-        # OrderedDict (empty)
-        self.assertFromTo(OrderedDict())
-        
-        # OrderedDict (nested)
-        self.assertFromTo(OrderedDict(OrderedDict(OrderedDict(OrderedDict(OrderedDict(OrderedDict(OrderedDict())))))))
-        
-        # ChainMap (empty)
-        self.assertFromTo(ChainMap())
-        
-        # ChainMap (nested)
-        self.assertFromTo(ChainMap(ChainMap({'a': 2, 'b': 3}, {'b': 1, 'c': 4}), ChainMap({'a': 2, 'b': 3}, {'b': 1, 'c': 4})))
-    
-    # Test the supported list types regularly
-    def test_list_types_regular(self):
-        # List
-        self.assertFromTo([3.142, None, 'Hello, world!'])
-        
-        # dict
-        self.assertFromTo({3.142: 'Hello, world!', True: False})
-        
-        # Tuple
-        self.assertFromTo((9009, 'banananana'))
-        
-        # Set
-        self.assertFromTo({'What is your favorite music genre?'})
-        
-        # Frozenset
-        self.assertFromTo(frozenset([3.142, None, 'Hello, world!']))
-    
-    # Test the supported list types with edge cases
-    def test_list_types_edgecases(self):
-        # List (empty)
-        self.assertFromTo([])
-        
-        # List (nested)
-        self.assertFromTo([[[[['Hello,', [[[]]], 'world!']]]]])
-        
-        # dict (empty)
-        self.assertFromTo(dict())
-        
-        # dict (nested)
-        self.assertFromTo({'Hello,': {'world!': {'This': {'is': {'deeply': {'nested!': {}}}}}}})
-        
-        # Tuple (empty)
-        self.assertFromTo(tuple())
-        
-        # Tuple (nested)
-        self.assertFromTo((((((((('All those commas...',),),),),),),),))
-        
-        # Set (empty)
-        self.assertFromTo(set())
-        
-        # Frozenset (empty)
-        self.assertFromTo(frozenset())
-
+        # Test the whole list with testing values as well
+        self.assertFromTo(test_values)
 
 if __name__ == '__main__':
     main()

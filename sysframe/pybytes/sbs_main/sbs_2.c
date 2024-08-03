@@ -265,7 +265,21 @@
 #define CHAINMAP_D1 91
 #define CHAINMAP_D2 92
 
-// # Return status codes
+// Path
+#define PATH_E  93
+#define PATH_1  94
+#define PATH_2  95
+#define PATH_D1 96
+#define PATH_D2 97
+
+// PurePath
+#define PPATH_E   98
+#define PPATH_1   99
+#define PPATH_2  100
+#define PPATH_D1 101
+#define PPATH_D2 102
+
+// # The return status codes
 
 typedef enum {
     SC_SUCCESS     = 0, // Successful operation, no issues
@@ -298,6 +312,10 @@ PyObject *deque_cl;
 PyObject *counter_cl;
 PyObject *ordereddict_cl;
 PyObject *chainmap_cl;
+
+// Pathlib Path and PurePath classes
+PyObject *path_cl;
+PyObject *purepath_cl;
 
 // # Initialization and cleanup functions
 
@@ -403,6 +421,8 @@ int sbs2_init(void)
     ordereddict_cl = PyObject_GetAttrString(collections_m, "OrderedDict");
     chainmap_cl = PyObject_GetAttrString(collections_m, "ChainMap");
 
+    Py_DECREF(collections_m);
+
     if (namedtuple_cl == NULL)
     {
         PyErr_SetString(PyExc_AttributeError, "Could not find attribute 'namedtuple' in module 'collections'.");
@@ -429,6 +449,31 @@ int sbs2_init(void)
         return -1;
     }
 
+    // Get the pathlib module
+    PyObject *pathlib_m = PyImport_ImportModule("pathlib");
+    if (pathlib_m == NULL)
+    {
+        PyErr_SetString(PyExc_ModuleNotFoundError, "Could not find module 'pathlib'.");
+        return -1;
+    }
+
+    // Get the required attribute
+    path_cl = PyObject_GetAttrString(pathlib_m, "Path");
+    purepath_cl = PyObject_GetAttrString(pathlib_m, "PurePath");
+
+    Py_DECREF(pathlib_m);
+
+    if (path_cl == NULL)
+    {
+        PyErr_SetString(PyExc_AttributeError, "Could not fund attribute 'Path' in module 'pathlib'.");
+        return -1;
+    }
+    else if (purepath_cl == NULL)
+    {
+        PyErr_SetString(PyExc_AttributeError, "Could not fund attribute 'PurePath' in module 'pathlib'.");
+        return -1;
+    }
+
     return 1;
 }
 
@@ -445,6 +490,8 @@ void sbs2_cleanup(void)
     Py_XDECREF(counter_cl);
     Py_XDECREF(ordereddict_cl);
     Py_XDECREF(chainmap_cl);
+    Py_XDECREF(path_cl);
+    Py_XDECREF(purepath_cl);
 }
 
 // # Helper functions for the from-conversion functions
@@ -524,7 +571,7 @@ static inline ValueData init_vd(PyObject *value, StatusCode *status)
     */
 
     // Attempt to estimate what the max possible byte size will be using sys.getsizeof
-    size_t max_size = _PySys_GetSizeOf(value) + ALLOC_SIZE; // Add the alloc size as headroom
+    size_t max_size = (_PySys_GetSizeOf(value) * 2) + ALLOC_SIZE;
 
     // Create the struct itself
     ValueData vd = {1, (Py_ssize_t)max_size, 0, (unsigned char *)malloc(max_size * sizeof(unsigned char))};
@@ -1128,6 +1175,25 @@ static inline StatusCode from_range(ValueData *vd, PyObject *value)
     return SC_SUCCESS;
 }
 
+// This function is used for both Path and PurePath objects
+static inline StatusCode from_path(ValueData *vd, PyObject *value, const unsigned char empty)
+{
+    if (!PyObject_IsInstance(value, path_cl) && !PyObject_IsInstance(value, purepath_cl)) return SC_INCORRECT;
+
+    // Get the path as a string to get the relative path
+    PyObject *rel_path = PyObject_Str(value);
+
+    // Get the relative path as C bytes
+    Py_ssize_t size;
+    const char *bytes = PyUnicode_AsUTF8AndSize(rel_path, &size);
+
+    // Write the data
+    if (write_E12D(vd, size, (const unsigned char *)bytes, empty) == SC_NOMEMORY) return SC_NOMEMORY;
+
+    // Return success
+    return SC_SUCCESS;
+}
+
 // # Functions for converting list type values to bytes and their helper functions
 
 // Pre-definition for the items in the iterables
@@ -1195,14 +1261,16 @@ static inline StatusCode from_tuple(ValueData *vd, PyObject *value)
 }
 
 // Function for any iterable type value
-static inline StatusCode from_iterable(ValueData *vd, PyObject *value, const unsigned char empty) // Get the E-tag datachar for the 'write_E12D' function
+static inline StatusCode from_iterable(ValueData *vd, PyObject *value, const unsigned char empty, PyObject *type_cl) // Get the E datachar for the 'write_E12D' function, and the class for type checking
 {
+    if (!PyObject_IsInstance(value, type_cl)) return SC_INCORRECT;
+
     // Increment the nest depth and return if it's too deep
     if (increment_nests(vd) == SC_NESTDEPTH) return SC_NESTDEPTH;
     
     // Create an iterator from the set so that we can count the items
     PyObject *count_iter = PyObject_GetIter(value);
-    if (count_iter == NULL) return SC_INCORRECT; // Likely not an iterable type that we received
+    if (count_iter == NULL) return SC_INCORRECT;
     
     // This will hold the number of items in the iterator
     Py_ssize_t num_items = 0;
@@ -1398,6 +1466,8 @@ static inline StatusCode from_chainmap(ValueData *vd, PyObject *value)
 
 static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
 {
+    //printf("Typename: %s\n", Py_TYPE(value)->tp_name); // Print for getting the typename when adding new datatypes
+
     // Check for special types that stand under tuples and types
     if (PyTuple_Check(value))
     {
@@ -1427,7 +1497,7 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
             switch (datatype[1])
             {
             case 't': return from_string(vd, value);
-            case 'e': return from_iterable(vd, value, SET_E);
+            case 'e': return from_iterable(vd, value, SET_E, (PyObject *)&PySet_Type);
             default:  return SC_INCORRECT;
             }
         }
@@ -1437,7 +1507,7 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
             switch (datatype[1])
             {
             case 'l': return from_float(vd, value);
-            case 'r': return from_iterable(vd, value, FSET_E);
+            case 'r': return from_iterable(vd, value, FSET_E, (PyObject *)&PyFrozenSet_Type);
             }
         }
         return from_float(vd, value);
@@ -1450,7 +1520,7 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
                 const char new_datachar = datatype[12];
                 switch (new_datachar)
                 {
-                case 'd': return from_iterable(vd, value, DEQUE_E);
+                case 'd': return from_iterable(vd, value, DEQUE_E, deque_cl);
                 case 'O': return from_dict_type(vd, value, ODICT_E);
                 default:  return SC_UNSUPPORTED;
                 }
@@ -1500,6 +1570,15 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
             default:  return SC_INCORRECT;
             }
         }
+        case 'P':
+        {
+            switch (datatype[1])
+            {
+            case 'u': return from_path(vd, value, PPATH_E); // PurePosixPath | PureWindowsPath
+            case 'o': return from_path(vd, value, PATH_E);  // PosixPath
+            }
+        }
+        case 'W': return from_path(vd, value, PATH_E); // WindowsPath
         default:  return SC_UNSUPPORTED;
         }
     }
@@ -1920,6 +1999,11 @@ static inline PyObject *to_range_s(ByteData *bd)
 
     // Create a range object with the attributes by calling the range class
     PyObject *range = PyObject_CallFunction((PyObject *)&PyRange_Type, "OOO", start, stop, step);
+    if (range == NULL)
+    {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to recreate a range object.");
+        // Don't return NULL, that will happen when returning the NULL range. The decrefs still need to happen
+    }
 
     // Decref the numbers we created as they're no longer necessary
     Py_DECREF(start);
@@ -1929,13 +2013,48 @@ static inline PyObject *to_range_s(ByteData *bd)
     return range;
 }
 
+// This function works for both Path and PurePath objects again
+static inline PyObject *to_path_e(ByteData *bd, PyObject *type_cl)
+{
+    if (ensure_offset(bd, 1) == -1) return NULL;
+    bd->offset++;
+
+    // Create and return an empty Path/PurePath
+    return PyObject_CallObject(type_cl, NULL);
+}
+
+static inline PyObject *to_path_gen(ByteData *bd, size_t size_bytes_length, PyObject *type_cl)
+{
+    if (ensure_offset(bd, size_bytes_length + 1) == -1) return NULL;
+
+    // Get the length of the item bytes
+    size_t length = bytes_to_size_t(&(bd->bytes[++bd->offset]), size_bytes_length);
+    bd->offset += size_bytes_length;
+
+    if (ensure_offset(bd, length) == -1) return NULL;
+
+    // This will hold the path string
+    char path_str[length + 1]; // Plus 1 for null-terminator
+
+    // Copy the bytes into the path string
+    memcpy(path_str, &(bd->bytes[bd->offset]), length);
+    // Null-terminate the path string
+    path_str[length] = '\0';
+
+    // Update the offset
+    bd->offset += length;
+
+    // Create and return the Path/PurePath object
+    return PyObject_CallFunction(type_cl, "s", path_str);;
+}
+
 // # The list type conversion functions and their helper functions
 
 static inline PyObject *to_list_e(ByteData *bd)
 {
     if (ensure_offset(bd, 1) == -1) return NULL;
-
     bd->offset++;
+
     // Return an empty Python list
     return PyList_New(0);
 }
@@ -1965,7 +2084,6 @@ static inline PyObject *to_list_gen(ByteData *bd, size_t size_bytes_length)
         }
 
         // Append the item and continue
-        Py_INCREF(item);
         PyList_SET_ITEM(list, i,  item);
     }
 
@@ -2622,6 +2740,36 @@ static inline PyObject *to_any_value(ByteData *bd)
         size_t size_bytes_length = D2_length(bd);
         if (size_bytes_length == 0) return NULL;
         return to_chainmap_gen(bd, size_bytes_length);
+    }
+    case PATH_E: return to_path_e(bd, path_cl);
+    case PATH_1: return to_path_gen(bd, 1, path_cl);
+    case PATH_2: return to_path_gen(bd, 1, path_cl);
+    case PATH_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_path_gen(bd, size_bytes_length, path_cl);
+    }
+    case PATH_D2:
+    {
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_path_gen(bd, size_bytes_length, path_cl);
+    }
+    case PPATH_E: return to_path_e(bd, purepath_cl);
+    case PPATH_1: return to_path_gen(bd, 1, purepath_cl);
+    case PPATH_2: return to_path_gen(bd, 1, purepath_cl);
+    case PPATH_D1:
+    {
+        size_t size_bytes_length = D1_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_path_gen(bd, size_bytes_length, purepath_cl);
+    }
+    case PPATH_D2:
+    {
+        size_t size_bytes_length = D2_length(bd);
+        if (size_bytes_length == 0) return NULL;
+        return to_path_gen(bd, size_bytes_length, purepath_cl);
     }
     default:
     {
