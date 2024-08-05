@@ -13,22 +13,6 @@ class build_ext(build_ext_orig):
 with open("README.md", "r") as fh:
     long_description = fh.read()
 
-"""
-# The unpublished membridge extension
-
-Extension(
-    'sysframe.membridge.membridge',
-    sources=[
-        'sysframe/membridge/membridge.c',
-        'sysframe/pybytes/sbs_main/sbs_2.c'
-    ],
-    include_dirs=[
-        'sysframe/membridge',
-        'sysframe/pybytes/sbs_main'
-    ]
-)
-"""
-
 setup(
     name="sysframe",
     version="0.2.3",
@@ -36,7 +20,7 @@ setup(
     author="Sven Boertjens",
     author_email="boertjens.sven@gmail.com",
     
-    description="A collection of modules useful for system programming with Python. NOTE: STILL IN DEVELOPMENT",
+    description="A collection of modules useful for low-level development tasks.",
     
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -51,7 +35,8 @@ setup(
     },
     
     ext_modules=[
-        Extension(
+        Extension( # Pybytes
+            
             'sysframe.pybytes.pybytes',
             sources=[
                 'sysframe/pybytes/pybytes.c',
@@ -62,6 +47,19 @@ setup(
                 'sysframe/pybytes'
             ]
         ),
+        Extension( # Membrigde
+            
+            'sysframe.membridge.membridge',
+            sources=[
+                'sysframe/membridge/membridge.c',
+                'sysframe/pybytes/sbs_main/sbs_2.c',
+                'sysframe/pybytes/sbs_old/sbs_1.c',
+            ],
+            include_dirs=[
+                'sysframe/membridge',
+                'sysframe/pybytes/sbs_main'
+            ]
+        )
     ],
     
     test_suite='tests',

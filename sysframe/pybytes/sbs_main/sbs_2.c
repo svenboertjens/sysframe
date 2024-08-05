@@ -329,6 +329,9 @@ int sbs2_init(void)
 
     */
 
+    // Init the other protocols
+    sbs1_init();
+
     // Import the datetime module
     PyDateTime_IMPORT;
 

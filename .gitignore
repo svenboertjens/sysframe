@@ -2,7 +2,7 @@ local
 .vscode
 __pycache__
 *.so
-README_setup.md
+example.md
 .venv
 build
 dist

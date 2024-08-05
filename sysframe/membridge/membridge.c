@@ -1,5 +1,4 @@
 #define PY_SSIZE_T_CLEAN
-
 #include <Python.h>
 #include <pthread.h>
 #include <fcntl.h>
@@ -12,194 +11,300 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <pthread.h>
-#include "conversions.h"
 
-typedef struct
-{
+// Include the serialization function from pybytes (from_value, to_value)
+#include "../pybytes/sbs_main/sbs_2.h"
+
+// Struct for basic shared memory
+typedef struct {
+    size_t max_size;
     pthread_mutex_t mutex;
-    void *value;
-} SharedMemoryStruct;
+} BasicShm;
 
-#define SHM_SIZE sizeof(SharedMemoryStruct)
+// The default size for basic shared memory
+#define BASIC_SIZE sizeof(BasicShm)
 
-PyObject *create_shared_memory(const char *name)
+// The headroom size for not too frequent reallocs
+#define HEAD_SIZE 32
+
+// # Shared memory creation & setup
+
+static inline int create_shared_memory(const char *name, size_t pre_size, PyObject *error_if_exists)
 {
-    int fd = shm_open(name, O_CREAT | O_RDWR, 0666);
+    int fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0666);
     if (fd == -1)
     {
-        perror("shm_open");
-        return Py_False;
+        if (errno == EEXIST && error_if_exists && Py_IsTrue(error_if_exists))
+        {
+            PyErr_Format(PyExc_MemoryError, "The memory address '%s' already exists.", name);
+            return -1; // Return -1 to indicate failure with error
+        }
+        // Return 1 to indicate failure without error
+        return 1;
     }
 
-    if (ftruncate(fd, SHM_SIZE) == -1)
+    if (ftruncate(fd, BASIC_SIZE + pre_size) == -1)
     {
-        perror("ftruncate");
         close(fd);
         shm_unlink(name);
-        return Py_False;
+        PyErr_Format(PyExc_MemoryError, "Failed to allocate for shared memory address '%s'.", name);
+        return -1;
     }
 
-    SharedMemoryStruct *shm_ptr = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (shm_ptr == MAP_FAILED)
+    BasicShm *shm = mmap(NULL, BASIC_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (shm == MAP_FAILED)
     {
-        perror("mmap");
         close(fd);
         shm_unlink(name);
-        return Py_False;
+        PyErr_Format(PyExc_MemoryError, "Failed to map shared memory address '%s'.", name);
+        return -1;
     }
 
+    // Initiate the mutex
     pthread_mutexattr_t attr;
-    pthread_mutexattr_init(&attr);
-    pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
-    pthread_mutex_init(&shm_ptr->mutex, &attr);
-    shm_ptr->value = NULL;
+    if (pthread_mutexattr_init(&attr) != 0 ||
+        pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED) != 0 ||
+        pthread_mutex_init(&(shm->mutex), &attr) != 0)
+    {
+        munmap(shm, BASIC_SIZE);
+        close(fd);
+        shm_unlink(name);
+        PyErr_Format(PyExc_MemoryError, "Failed to initialize mutex for shared memory address '%s'.", name);
+        return -1;
+    }
 
-    munmap(shm_ptr, SHM_SIZE);
+    shm->max_size = pre_size;
+    pthread_mutexattr_destroy(&attr);
+    munmap(shm, BASIC_SIZE);
     close(fd);
 
-    return Py_True;
+    // Return 0 to indicate success
+    return 0;
 }
 
-PyObject *create_memory(PyObject *self, PyObject *args)
+PyObject *create_memory(PyObject *self, PyObject *args, PyObject *kwargs)
 {
-    PyObject *name;
+    const char *name;
+    PyObject *prealloc_size = NULL;
+    PyObject *error_if_exists = NULL;
 
-    if (!PyArg_ParseTuple(args, "O!", &PyUnicode_Type, &name))
+    static char* kwlist[] = {"name", "prealloc_size", "error_if_exists", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "s|O!O!", kwlist, &name, &PyLong_Type, &prealloc_size, &PyBool_Type, &error_if_exists))
     {
-        PyErr_SetString(PyExc_ValueError, "Expected 1 'str' type.");
+        PyErr_SetString(PyExc_ValueError, "Expected at least the name (str) argument.");
         return NULL;
     }
 
-    // Create the shared memory and return the result
-    return create_shared_memory(PyUnicode_AsUTF8(name));
-}
-
-PyObject *remove_memory(PyObject *self, PyObject *args)
-{
-    PyObject *py_name;
-
-    if (!PyArg_ParseTuple(args, "O!", &PyUnicode_Type, &py_name))
+    size_t pre_size = 0;
+    if (prealloc_size != NULL)
     {
-        PyErr_SetString(PyExc_ValueError, "Expected 1 'str' type.");
-        return NULL;
+        pre_size = PyLong_AsSize_t(prealloc_size);
+        if (pre_size == (size_t)-1 && PyErr_Occurred())
+        {
+            PyErr_SetString(PyExc_ValueError, "The given pre-allocate size is too large.");
+            return NULL;
+        }
     }
 
-    // Convert the name to a C char
-    char *name = PyUnicode_AsUTF8(py_name);
-
-    // Unlink the memory
-    if (!shm_unlink(name))
+    int result = create_shared_memory(name, pre_size, error_if_exists);
+    switch(result)
     {
-        // Failed to unlink, return False to indicate failure
-        return Py_False;
+    case -1: return NULL; // Error already set
+    case 0:  return Py_True;
+    case 1:  return Py_False;
     }
-
-    // Return True to indicate success
-    return Py_True;
 }
 
-char *read_shared_memory(const char *name)
+// Helper function to get a shared memory pointer
+static inline BasicShm *get_shm(const char *name, size_t new_size, PyObject *create)
 {
     int fd = shm_open(name, O_RDWR, 0666);
     if (fd == -1)
     {
-        perror("shm_open");
-        return NULL;
+        if (errno == ENOENT && (create == NULL || (create && Py_IsTrue(create))))
+        {
+            if (create_shared_memory(name, 0, NULL) == -1)
+                return NULL;
+            fd = shm_open(name, O_RDWR, 0666);
+            if (fd == -1)
+            {
+                PyErr_Format(PyExc_MemoryError, "Failed to open shared memory address '%s' after creation.", name);
+                return NULL;
+            }
+        }
+        else
+        {
+            PyErr_Format(PyExc_MemoryError, "Failed to open shared memory address '%s'.", name);
+            return NULL;
+        }
     }
 
-    SharedMemoryStruct *shm_ptr = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (shm_ptr == MAP_FAILED)
+    // Map the basic structure first to access max_size
+    BasicShm *shm = mmap(NULL, BASIC_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (shm == MAP_FAILED)
     {
-        perror("mmap");
         close(fd);
+        PyErr_Format(PyExc_MemoryError, "Failed to map shared memory metadata address '%s'.", name);
         return NULL;
     }
 
-    pthread_mutex_lock(&shm_ptr->mutex);
-    char *value = shm_ptr->value;
-    pthread_mutex_unlock(&shm_ptr->mutex);
+    // Get the max size from the basic structure
+    size_t max_size = shm->max_size;
+    size_t total_size = BASIC_SIZE + max_size;
+    
+    // Unmap the initial mapping to remap the full size
+    munmap(shm, BASIC_SIZE);
 
-    munmap(shm_ptr, SHM_SIZE);
+    // Check whether we got a new size we might need to update
+    if (new_size > max_size)
+    {
+        // Update the new total size
+        total_size = BASIC_SIZE + new_size + HEAD_SIZE;
+
+        if (ftruncate(fd, total_size) == -1)
+        {
+            close(fd);
+            PyErr_Format(PyExc_MemoryError, "Failed to resize shared memory.");
+            return NULL;
+        }
+    }
+
+    // Remap with the correct size
+    shm = mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (shm == MAP_FAILED)
+    {
+        close(fd);
+        PyErr_Format(PyExc_MemoryError, "Failed to map shared memory address '%s'.", name);
+        return NULL;
+    }
+
+    // Update the max size if it was changed
+    if (shm->max_size < new_size)
+        shm->max_size = new_size + HEAD_SIZE;
+
     close(fd);
+    return shm;
+}
 
-    return value;
+// Function to close a shared memory pointer
+static inline void close_shm(BasicShm *shm)
+{
+    size_t total_size = BASIC_SIZE + shm->max_size;
+    pthread_mutex_unlock(&(shm->mutex));
+    munmap(shm, total_size);
+}
+
+PyObject *remove_memory(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    const char *name;
+    PyObject *throw_error = NULL;
+
+    static char* kwlist[] = {"name", "throw_error", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "s|O!", kwlist, &name, &PyBool_Type, &throw_error))
+    {
+        PyErr_SetString(PyExc_ValueError, "Expected at least the 'name' (str) argument.");
+        return NULL;
+    }
+
+    if (shm_unlink(name) == -1)
+    {
+        if (throw_error && Py_IsTrue(throw_error))
+        {
+            PyErr_SetString(PyExc_MemoryError, "Failed to unlink the shared memory.");
+            return NULL;
+        }
+        Py_RETURN_FALSE;
+    }
+
+    Py_RETURN_TRUE;
 }
 
 PyObject *read_memory(PyObject *self, PyObject *args)
 {
-    PyObject *name;
+    const char *name;
 
-    if (!PyArg_ParseTuple(args, "O!", &PyUnicode_Type, &name))
+    if (!PyArg_ParseTuple(args, "s", &name))
     {
         PyErr_SetString(PyExc_ValueError, "Expected 1 'str' type.");
         return NULL;
     }
 
-    // Fetch the value stored in the shared memory
-    char *value = read_shared_memory(PyUnicode_AsUTF8(name));
+    BasicShm *shm = get_shm(name, 0, Py_None);
+    if (shm == NULL) return NULL;  // Error already set
 
-    // Return the value as a Python bytes object
-    return PyBytes_FromString(value);
-}
-
-PyObject *write_shared_memory(const char *name, char *value)
-{
-    int fd = shm_open(name, O_RDWR, 0666);
-    if (fd == -1)
+    if (shm->max_size == 0)
     {
-        PyErr_SetString(PyExc_MemoryError, "Failed to open the shared memory address.");
-        return NULL;
+        close_shm(shm);
+        Py_RETURN_NONE;
     }
 
-    SharedMemoryStruct *shm_ptr = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (shm_ptr == MAP_FAILED)
-    {
-        PyErr_SetString(PyExc_MemoryError, "Failed to map the shared memory address.");
-        return NULL;
-    }
+    PyObject *py_bytes = PyBytes_FromStringAndSize((char *)shm + BASIC_SIZE, shm->max_size);
+    PyObject *value = to_value(py_bytes);
 
-    pthread_mutex_lock(&shm_ptr->mutex);
-    shm_ptr->value = value;
-    pthread_mutex_unlock(&shm_ptr->mutex);
+    Py_DECREF(py_bytes);
+    close_shm(shm);
 
-    munmap(shm_ptr, SHM_SIZE);
-    close(fd);
-
-    // Return True to indicate success
-    return Py_True;
+    return value;
 }
 
-PyObject *write_memory(PyObject *self, PyObject *args)
+PyObject *write_memory(PyObject *self, PyObject *args, PyObject *kwargs)
 {
-    PyObject *name;
+    const char *name;
     PyObject *value;
+    PyObject *create = NULL;
 
-    if (!PyArg_ParseTuple(args, "O!O!", &PyUnicode_Type, &name, &PyBytes_Type, &value))
+    static char* kwlist[] = {"name", "value", "create", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "sO|O!", kwlist, &name, &value, &PyBool_Type, &create))
     {
-        PyErr_SetString(PyExc_ValueError, "Expected a 'str' and 'bytes' type.");
+        PyErr_SetString(PyExc_ValueError, "Expected at least the 'name' (str) and 'value' (any) arguments.");
         return NULL;
     }
 
-    // Write it to the shared memory address
-    return write_shared_memory(PyUnicode_AsUTF8(name), PyBytes_AsString(value));
+    // Convert the value to a Python bytes object
+    PyObject *py_bytes = from_value(value);
+    if (py_bytes == NULL) return NULL; // Error already set
+
+    // Convert the Python bytes object to C bytes
+    size_t size;
+    char *bytes;
+    if (PyBytes_AsStringAndSize(py_bytes, &bytes, &size) == -1)
+    {
+        Py_DECREF(py_bytes);
+        PyErr_SetString(PyExc_RuntimeError, "Failed to convert a Python bytes object to a C string.");
+        return NULL;
+    }
+    Py_DECREF(py_bytes);
+
+    BasicShm *shm = get_shm(name, size, create);
+    if (shm == NULL) return NULL;
+
+    memcpy((char *)shm + BASIC_SIZE, bytes, size);
+    close_shm(shm);
+    Py_RETURN_TRUE;
 }
+
+// # Shared functions
 
 typedef struct {
+    size_t max_size;
     pthread_mutex_t mutex;
     pthread_cond_t func_cond;
     pthread_cond_t call_cond;
-    char activity;
-    char args[1024]; // The max args size is 1024 bytes
+    unsigned char activity;
+    unsigned char *args;
 } shared_function;
 
 // Initiate a shared memory for a shared function
 PyObject *create_shared_function(const char *name, PyObject *func)
 {
-    int fd = shm_open(name, O_CREAT | O_RDWR, 0666);
+    int fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0666);
     if (fd == -1)
     {
         // Check whether it already exists or if it's a different error
-        if (errno == ENOENT)
+        if (errno == EEXIST)
         {
             PyErr_SetString(PyExc_MemoryError, "The shared memory address already exists.");
             return NULL;
@@ -450,20 +555,22 @@ PyObject *remove_function(PyObject *self, PyObject *args)
 }
 
 static PyMethodDef methods[] = {
-    {"create_memory", create_memory, METH_VARARGS, "Create a shared memory address."},
-    {"remove_memory", remove_memory, METH_VARARGS, "Remove a shared memory address."},
+    {"create_memory", (PyCFunction)create_memory, METH_VARARGS | METH_KEYWORDS, "Create a shared memory address."},
+    {"remove_memory", (PyCFunction)remove_memory, METH_VARARGS | METH_KEYWORDS, "Remove a shared memory address."},
     {"read_memory", read_memory, METH_VARARGS, "Get the value stored in a shared memory address."},
-    {"write_memory", write_memory, METH_VARARGS, "Write a value to a shared memory address."},
+    {"write_memory", (PyCFunction)write_memory, METH_VARARGS | METH_KEYWORDS, "Write a value to a shared memory address."},
 
-    {"create_function", create_function, METH_VARARGS, "Create and link a shared function handle."},
-    {"remove_function", remove_function, METH_VARARGS, "Unlink a shared function and its memory address."},
-    {"call_function", call_function, METH_VARARGS, "Call a function linked to a shared function handle."},
+    // Still working on these
+    //{"create_function", create_function, METH_VARARGS, "Create and link a shared function handle."},
+    //{"remove_function", remove_function, METH_VARARGS, "Unlink a shared function and its memory address."},
+    //{"call_function", call_function, METH_VARARGS, "Call a function linked to a shared function handle."},
 
     {NULL, NULL, 0, NULL}
 };
 
 void membridge_module_cleanup(void *module)
 {
+    sbs2_cleanup();
     Py_Finalize();
 }
 
@@ -479,6 +586,7 @@ static struct PyModuleDef membridge = {
 
 PyMODINIT_FUNC PyInit_membridge(void)
 {
+    sbs2_init();
     Py_Initialize();
     return PyModule_Create(&membridge);
 }

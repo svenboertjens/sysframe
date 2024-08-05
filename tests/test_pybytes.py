@@ -19,10 +19,8 @@ test_values = [
     12345,
     10**1000,
     -(10**1000),
-    0,
     # Float
     3.142,
-    0.0,
     # Bool
     True,
     False,

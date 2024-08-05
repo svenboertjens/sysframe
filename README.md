@@ -1,11 +1,13 @@
 # Sysframe
 
-A framework designed for providing tools to develop system services with.
+A collection of modules useful for low-level development tasks.
 
 
 ## Introduction
 
 This is a custom framework that provides the tools used by the various system services made by me. This includes modules such as for managing shared memory and other IPC operations, and serialization for converting values to bytes to store them in said shared memory.
+
+This module is essentially a package providing tools for
 
 
 ## Current modules
@@ -15,36 +17,62 @@ This framework currently consists of the following modules:
 - `pybytes`
 - `membridge`
 
-Explanations on how to use these modules are found in module-specific README files under the `documentation` folder.
+Usage explanations on these modules can be found under the `documentation` directory.
 
 
 ## Modules
 
-Here, you can find a brief explanation of each module contained by this package.
-For detailed explanation per module, you can find a module-specific README in the module dir.
+Beside the module-specific explanations, here's a brief mention of each module and their functionality.
 
 
 ### Pybytes
 
-Pybytes is a module that's used for serializing and de-serializing values. It aims to keep the byte size smaller without sacrificing too much performance, making it suitable for system development.
-It supports a wide range of datatypes, including datatypes from core modules (such as datetime or uuid). The list of available datatypes can be found in the modules README.
+Pybytes is a module that offers lossless serialization methods that aim to keep the serialized objects byte size small, while also maintaining fast and practically neglectible serialization speeds.
+It aims to cover a wide variety of core Python datatypes. Here's a list of all (currently) supported datatypes:
 
-Besides that, it also supports any of the standard list types, those being `list`, `dict`, `tuple`, `set` and `frozenset`. These are also allowed to be nested to a depth of 100.
+- `str`
+- `int`
+- `float`
+- `bool`
+- `complex`
+- `NoneType`
+- `ellipsis`
+- `bytes`
+- `bytearray`
+- `datetime`:
+  - `timedelta`
+  - `datetime`
+  - `date`
+  - `time`
+- `uuid.UUID`
+- `memoryview`
+- `decimal.Decimal`
+- `range`
+- `collections`:
+  - `deque`
+  - `namedtuple`
+  - `Counter`
+  - `OrderedDict`
+
+If you need support for additional datatypes, feel free to request them!
+
+Apart from the 'regular' serialization that's widely used today, this module is in development of a storage system that uses the datatype-specific serialization techniques of the regular serializer to create and maintain a storage system, which is basically just SQL, but tailored to Python. This could have multiple different purposes, ranging from a simple cache to essentially a database-like storage.
 
 
 ### Membridge
 
-Membridge is a module for IPC operations, allowing independent processes to communicate. This was added to the sysframe package because it supports shared function calls, which can be used to keep the 'main' process of a service the actual service, and have it provide handles to other processes so that they can operate using the main process. This is useful if you want to avoid having multiple processes running the same operations, which can be considered a waste of resources.
-
-Membridge uses the `sysframe.pybytes` module for serializing and de-serializing the values to be passed to the shared memory. If you want to use a different serializer that would support other datatypes for example, you can use whichever serializer you want, and pass the received bytes object to membridge, as `sysframe.pybytes` supports byte objects.
-
-This module has not been tested yet, and is still being worked on. Thus, it's also not in the package currently.
+Membridge is an IPC module that aims to simplify the sometimes complex usage of shared memory for you.
+It automatically manages the shared memory size for you and (de-)serializes everything internally, so that you only have to input the value you want to store, and can retrieve it as well, without having to use a serializer anywhere.
 
 
 ## Contact
 
-If you happen to find a problem or have a question, feel free to contact me via:
+If you happen to find a problem or have a question or suggestion, feel free to contact me via:
 
 - Discord: `sven_de_pen`,
 - Email:   `boertjens.sven@gmail.com`
+
+Alternatively, you can create an issue or start a discussion on the GitHub repository:
+
+[sysframe github](https://github.com/svenboertjens/sysframe)
 
