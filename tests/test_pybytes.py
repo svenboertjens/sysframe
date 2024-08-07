@@ -1,5 +1,5 @@
 from unittest import TestCase, main
-import pybytes
+from sysframe import pybytes
 
 from collections import *
 from pathlib import Path, PurePath

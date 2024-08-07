@@ -10,12 +10,12 @@ class build_ext(build_ext_orig):
                 ext.extra_compile_args = ['-O3']
         super().build_extensions()
 
-with open("README.md", "r") as fh:
-    long_description = fh.read()
+with open("README.md", "r") as file:
+    long_description = file.read()
 
 setup(
     name="sysframe",
-    version="0.2.3",
+    version="0.3.0",
     
     author="Sven Boertjens",
     author_email="boertjens.sven@gmail.com",
@@ -44,11 +44,11 @@ setup(
                 'sysframe/pybytes/sbs_old/sbs_1.c',
             ],
             include_dirs=[
-                'sysframe/pybytes'
+                'sysframe/pybytes',
             ]
         ),
-        Extension( # Membrigde
-            
+        Extension( # membridge
+        
             'sysframe.membridge.membridge',
             sources=[
                 'sysframe/membridge/membridge.c',
@@ -57,7 +57,7 @@ setup(
             ],
             include_dirs=[
                 'sysframe/membridge',
-                'sysframe/pybytes/sbs_main'
+                'sysframe/pybytes',
             ]
         )
     ],
@@ -69,7 +69,7 @@ setup(
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
-        "Operating System :: OS Independent",
+        "Operating System :: Linux",
     ],
-    python_requires='>=3.6',
+    python_requires='>=3.6, <3.13',
 )

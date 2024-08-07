@@ -5,11 +5,11 @@
 #include <ctype.h>
 
 // Include the current SBS protocol as it offsets pre-imported values we need
-#include "../sbs_main/sbs_2.h"
+#include "sbs_main/sbs_2.h"
 
 /*
   This is the SBS protocol 1 file, stripped down for just to-conversions.
-  This file should not receive changes, as it's from an old protocol.
+  This file should not receive changes as it's from an old protocol.
   
 */
 

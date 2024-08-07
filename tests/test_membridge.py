@@ -1,6 +1,6 @@
 # Use the test values from `test_pybytes`
 from test_pybytes import test_values
-import membridge
+from sysframe import membridge
 
 # The shared memory name
 name = '/test-python-membridge-123'

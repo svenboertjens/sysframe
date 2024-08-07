@@ -4,7 +4,7 @@
 #include <datetime.h>
 #include <ctype.h>
 
-#include "../sbs_old/sbs_1.h"
+#include "sbs_old/sbs_1.h"
 #include "sbs_2.h"
 
 /*
@@ -69,7 +69,7 @@
   There are multiple protocols in use. The older protocols are
   still supported for de-serialization, but no longer support
   the serialization. The standard serialization protocol that is
-  currently in use is called `PROT_SBS_D`, which stands for
+  currently in use is called `PROT_D`, which stands for
   'Protocol SBS, Default'. The 'SBS' tag is used to separate
   it from the SFS protocols.
 
@@ -97,16 +97,6 @@
   but there's also one which allows you to set a custom one before
   returning it, that being 'SC_EXCEPTION'.
 
-
-  # Plan for support
-
-  The following datatypes are planned to be supported in the future:
-
-  - pathlib.Path
-
-  Aside those specific datatypes, more datatypes from core libraries
-  will be included in the future as well, such as from 'collections'.
-
 */
 
 // # 'Global' markers
@@ -115,8 +105,7 @@
 #define PROT_1 254 // Protocol 1
 #define PROT_2 253 // Protocol 2
 
-#define PROT_SBS_D PROT_2 // The default SBS protocol
-#define PROT_SFS_D PROT_1 // The default SFS protocol
+#define PROT_D PROT_2 // The default protocol
 
 // # 'Standard' values
 
@@ -278,6 +267,9 @@
 #define PPATH_2  100
 #define PPATH_D1 101
 #define PPATH_D2 102
+
+// Literal NULL
+#define NULL_S 103
 
 // # The return status codes
 
@@ -586,7 +578,7 @@ static inline ValueData init_vd(PyObject *value, StatusCode *status)
     }
 
     // Write the protocol byte
-    const unsigned char protocol = PROT_SBS_D;
+    const unsigned char protocol = PROT_D;
     vd.bytes[0] = protocol;
 
     *status = SC_SUCCESS;
@@ -1471,8 +1463,13 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
 {
     //printf("Typename: %s\n", Py_TYPE(value)->tp_name); // Print for getting the typename when adding new datatypes
 
+    // Check for NULL values
+    if (value == NULL)
+    {
+        return from_static_value(vd, NULL_S);
+    }
     // Check for special types that stand under tuples and types
-    if (PyTuple_Check(value))
+    else if (PyTuple_Check(value))
     {
         // Check if it's an actual tuple
         if (PyTuple_CheckExact(value))
@@ -1589,6 +1586,14 @@ static inline StatusCode from_any_value(ValueData *vd, PyObject *value)
 
 PyObject *from_value(PyObject *value)
 {
+    // Check if the value is NULL
+    if (value == NULL)
+    {
+        // Send a NULL datachar with the current protocol
+        const char datachars[2] = {PROT_D, NULL_S};
+        return PyBytes_FromStringAndSize(datachars, 2);
+    }
+
     // Initiate the ValueData
     StatusCode vd_status;
     ValueData vd = init_vd(value, &vd_status);
@@ -2049,6 +2054,15 @@ static inline PyObject *to_path_gen(ByteData *bd, size_t size_bytes_length, PyOb
 
     // Create and return the Path/PurePath object
     return PyObject_CallFunction(type_cl, "s", path_str);;
+}
+
+static inline PyObject *to_null(ByteData *bd)
+{
+    if (ensure_offset(bd, 1) == -1) return NULL;
+    bd->offset++;
+    // Set an error in case the NULL isn't expected or treated correctly
+    PyErr_SetString(PyExc_ValueError, "This error message was set because sysframe.pybytes was assigned to create and return a NULL value.");
+    return NULL;
 }
 
 // # The list type conversion functions and their helper functions
@@ -2796,7 +2810,7 @@ PyObject *to_value(PyObject *py_bytes)
     // Decide what to do based on the protocol version
     switch (protocol)
     {
-    case PROT_SBS_D: // The default SBS protocol
+    case PROT_D: // The default SBS protocol
     {
         // Get the length of this bytes object for memory allocation
         Py_ssize_t bytes_length = PyBytes_Size(py_bytes);

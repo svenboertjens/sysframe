@@ -35,7 +35,6 @@ def remove_memory(name: str, throw_error: bool=False) -> bool:
 
 def read_memory(name: str) -> any:
     """
-    Remove a shared memory segment.
     Read the value stored to a shared memory segment.
     
     Arguments:
@@ -56,10 +55,43 @@ def write_memory(name: str, value: any, create: bool=True) -> bool:
     """
     ...
 
+def create_function(name: str, function: callable) -> None:
+    """
+    Create and link a function to shared memory.
+    
+    Arguments:
+    - `name`: The unique name for your shared memory.
+    - `function`: The function (or any callable) you want to link to the shared memory.
+    
+    The given function will run in the context of the process that linked it to the shared memory.
+    
+    """
+    ...
 
-""" # Still working on these
-def create_function(memory_name: str, function: callable) -> bool: ...
-def remove_function(memory_name: str) -> int: ...
-def call_function(memory_name: str, args: tuple) -> bool: ...
-"""
+def remove_function(name: str) -> bool:
+    """
+    Stop a function linked to shared memory.
+    
+    Arguments:
+    - `name`: The unique memory address name you want to remove the function from.
+    
+    This will stop the function from listening to calls, and close the shared memory segment.
+    This will return True on success, and False if the shared memory segment couldn't be opened.
+    
+    """
+    ...
+
+def call_function(name: str, args: tuple) -> any:
+    """
+    Call a function linked to shared memory.
+    
+    Arguments:
+    - `name`: The unique name that the function is linked to.
+    - `args`: The arguments you want to send to the function
+    
+    This will call the linked function in the context the process that defined it.
+    This will return the arguments sent by the linked function.
+    
+    """
+    ...
 

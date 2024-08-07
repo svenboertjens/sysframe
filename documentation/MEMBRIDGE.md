@@ -1,6 +1,6 @@
 # membridge
 
-A module for using shared memory tools in Python.
+A module for managing shared memory with Python.
 
 
 ## Methods
@@ -60,5 +60,50 @@ membridge.remove_memory(name)
 
 ### IPC function calls:
 
-These methods are still in development.
+Create: `create_function(name: str, function: callable) -> None`
+Remove: `remove_function(name: str) -> bool`
+Call:   `call_function(name: str, args: tuple) -> any`
+
+Only one function can be linked to a shared memory segment at the same time.
+
+Here is an example on how to use IPC function calls:
+```
+# link_function.py
+
+from sysframe import membridge
+
+# This is the address name we will link our function to
+name = '/unique-example-name-123'
+
+# This is the function we want to link
+number = 0
+def add_to_number(to_add: float):
+    global number
+    number += to_add
+    return number
+
+# Link the function
+membridge.create_function(name, add_to_number)
+```
+```
+# call_function.py
+
+from membridge import sysframe
+
+# This is the name that we linked the function to earlier
+name = '/unique-example-name-123'
+
+# This is the number we would like to add by calling the function
+to_add = 3.5
+
+# We can call the function and get the value it returns, in this case the updated number
+# We should send the arguments in a tuple
+new_number = membridge.call_function(name, (to_add,))
+
+# Now, it's good practice to remove the function. We don't need it anymore
+membridge.remove_function(name)
+
+# And see here, the new number!
+print(new_number)
+```
 
