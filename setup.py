@@ -15,7 +15,7 @@ with open("README.md", "r") as file:
 
 setup(
     name="sysframe",
-    version="0.3.0",
+    version="0.4.1",
     
     author="Sven Boertjens",
     author_email="boertjens.sven@gmail.com",
@@ -30,9 +30,6 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     install_requires=[],
-    package_data={
-        '': ['*.pyi'],
-    },
     
     ext_modules=[
         Extension( # Pybytes
@@ -59,8 +56,11 @@ setup(
                 'sysframe/membridge',
                 'sysframe/pybytes',
             ]
-        )
+        ),
     ],
+    package_data={
+        '': ['*.pyi']
+    },
     
     test_suite='tests',
     tests_require=['unittest'],
@@ -69,7 +69,7 @@ setup(
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
-        "Operating System :: Linux",
+        "Operating System :: POSIX :: Linux",
     ],
     python_requires='>=3.6, <3.13',
 )

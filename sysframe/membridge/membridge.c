@@ -448,18 +448,15 @@ static inline PyObject *create_shared_function(const char *name, PyObject *func)
     // Check whether we have to clean up some stuff due to an exception that occurred
     if (exit_status == 1)
     {
-        printf("exit 1 found\n");
         null_function(shm);
         // Signal the caller and unlock to prevent deadlocks
         pthread_cond_signal(&(shm->ccond));
         pthread_mutex_unlock(&(shm->mutex));
     }
-    printf("unlinking\n");
 
     // Unmap and unlink the shared memory
     munmap(shm, FUNCTION_SIZE + FUNCTION_ARGS);
     shm_unlink(name);
-    printf("done\n");
 
     // Return None on success, NULL on error to throw it
     return exit_status == 1 ? NULL : Py_None;

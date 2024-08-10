@@ -57,9 +57,6 @@ void pybytes_module_cleanup(void *module)
 {
     // Cleanup the SBS modules
     sbs2_cleanup();
-
-    // Close the Python interpreter
-    Py_Finalize();
 }
 
 // Information about this Python module
@@ -76,9 +73,6 @@ static struct PyModuleDef pybytes = {
 // Initialization function
 PyMODINIT_FUNC PyInit_pybytes(void)
 {
-    // Init the Python interpreter
-    Py_Initialize();
-
     // Init the SBS module
     if (sbs2_init() == -1) return NULL;
 
