@@ -52,7 +52,7 @@ static PyMethodDef methods[] = {
     {NULL, NULL, 0, NULL}
 };
 
-// Finalize the Python interpreter on exit
+// Clean up on exit
 void pybytes_module_cleanup(void *module)
 {
     // Cleanup the SBS modules

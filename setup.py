@@ -56,7 +56,7 @@ setup(
                 'sysframe/membridge',
                 'sysframe/pybytes',
             ]
-        ),
+        )
     ],
     package_data={
         '': ['*.pyi']

@@ -16,10 +16,10 @@ It offers operations to create shared functions, which are functions defined by 
 
 ### Basic shared memory:
 
-Create: `create_memory(name: str, prealloc_size: int=None, error_if_exists: bool=False) -> bool`
-Remove: `remove_memory(name: str, throw_error: bool=False) -> bool`
-Read:   `read_memory(name: str) -> any`
-Write:  `write_memory(name: str, value: any, create: bool=True) -> bool`
+- Create: `create_memory(name: str, prealloc_size: int=None, error_if_exists: bool=False) -> bool`
+- Remove: `remove_memory(name: str, throw_error: bool=False) -> bool`
+- Read:   `read_memory(name: str) -> any`
+- Write:  `write_memory(name: str, value: any, create: bool=True) -> bool`
 
 It's not necessary to define the `prealloc_size` when creating the shared memory, as the memory size is managed dynamically.
 
@@ -60,9 +60,9 @@ membridge.remove_memory(name)
 
 ### IPC function calls:
 
-Create: `create_function(name: str, function: callable) -> None`
-Remove: `remove_function(name: str) -> bool`
-Call:   `call_function(name: str, args: tuple) -> any`
+- Create: `create_function(name: str, function: callable) -> None`
+- Remove: `remove_function(name: str) -> bool`
+- Call:   `call_function(name: str, args: tuple) -> any`
 
 Only one function can be linked to a shared memory segment at the same time.
 

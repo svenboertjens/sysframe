@@ -1,17 +1,12 @@
 # pybytes
 
-A module for serialization and data storage.
+A module for serializing variables.
 
 
 ## Methods
 
-Currently, only the serialization methods are available. The storage methods are still in heavy development.
-
-
-### Serialization:
-
-Serialize:    `from_value(value: any) -> bytes`
-De-serialize: `to_value(bytes_obj: bytes) -> any`
+- Serialize:    `from_value(value: any) -> bytes`
+- De-serialize: `to_value(bytes_obj: bytes) -> any`
 
 The supported datatypes are listed in the global README.
 
@@ -29,8 +24,4 @@ bytes_obj = pybytes.from_value(original_value)
 # And convert it back to the original value
 reconstructed_value = pybytes.to_value(bytes_obj)
 ```
-
-### Storage:
-
-This is still in very early stages (and thus unreleased), so there's not much to say here currently.
 

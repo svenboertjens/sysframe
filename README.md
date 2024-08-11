@@ -56,8 +56,6 @@ It aims to cover a wide variety of core Python datatypes. Here's a list of all (
 
 If you need support for additional datatypes, feel free to request them!
 
-Apart from the 'regular' serialization that's widely used today, this module is in development of a storage system that uses the datatype-specific serialization techniques of the regular serializer to create and maintain a storage system, which is basically just SQL, but tailored to Python. This could have multiple different purposes, ranging from a simple cache to essentially a database-like storage.
-
 
 ### Membridge
 
